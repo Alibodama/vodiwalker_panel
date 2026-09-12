@@ -6,6 +6,7 @@
 import asyncio
 import base64
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -43,7 +44,6 @@ from fastapi.middleware.cors import CORSMiddleware
 # ============================================================
 
 APP_NAME = "VodiWalker"
-SALES_ENABLED = __import__("os").environ.get("VODIWALKER_SALES_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
 APP_VERSION = "27.3.0"
 
 SUPPORT_USERNAME = "@VodiWalker"
@@ -111,9 +111,30 @@ app = FastAPI(
     redoc_url=None,
 )
 
+# ------------------------------------------------------------------
+# رفع باگ امنیتی CORS: قبلاً allow_origins=["*"] همراه با allow_credentials=True
+# بود. این ترکیب باعث می‌شه Starlette به‌جای "*"، مقدار Origin درخواست رو عیناً
+# در پاسخ منعکس کنه (چون مرورگر wildcard+credentials رو قبول نمی‌کنه) و در عمل
+# هر سایتی می‌تونه با کوکی نشست کاربر (که HttpOnly نیست/است ولی از طریق fetch
+# credentials:'include' قابل استفاده‌ست) به API پنل درخواست بزنه — یعنی عملاً
+# محدودیتی وجود نداشت. پنل روی همون origin سرو می‌شه (fetch های نسبی '/api/...')
+# پس نیازی به CORS باز برای بخش ادمین نیست؛ فقط دامنه(های) صریح مجاز می‌شن.
+_cors_env = os.environ.get("CORS_ALLOWED_ORIGINS", "").strip()
+_public_base_url_env = os.environ.get("PUBLIC_BASE_URL", "").strip()
+_railway_domain_env = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "").strip()
+
+CORS_ALLOWED_ORIGINS = [o.strip() for o in _cors_env.split(",") if o.strip()]
+if _public_base_url_env:
+    CORS_ALLOWED_ORIGINS.append(_public_base_url_env.rstrip("/"))
+if _railway_domain_env:
+    CORS_ALLOWED_ORIGINS.append(f"https://{_railway_domain_env}")
+# برای توسعه‌ی محلی
+CORS_ALLOWED_ORIGINS += ["http://localhost:8000", "http://127.0.0.1:8000"]
+CORS_ALLOWED_ORIGINS = sorted(set(CORS_ALLOWED_ORIGINS))
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -185,7 +206,15 @@ CONFIG = {
         "RAILWAY_PUBLIC_DOMAIN",
         "localhost",
     ),
-   
+    # آدرس عمومی ثابت پنل (مثلاً https://panel.example.com) — اگر ست بشه (از تنظیمات
+    # پنل یا env)، به جای Host header ناپایدار درخواست‌ها برای ساخت لینک ساب استفاده می‌شه.
+    # این رفع اصلیِ باگ «لینک ساب باز نمی‌شه» است: قبلاً هر درخواست ورودی (حتی یک
+    # هلث‌چک یا ربات مانیتورینگ با Host نادرست) می‌تونست CONFIG["host"] سراسری رو
+    # خراب کنه و لینک‌های بعدی رو با دامنه/آی‌پی اشتباه بسازه.
+    "public_base_url": os.environ.get("PUBLIC_BASE_URL", "").strip(),
+    # آدرس/پورت عمومی TCP برای لینک‌های vless-tcp — چون این‌ها روی یک پورت جدا
+    # (tcp_relay.py) سرو می‌شن که آدرس عمومیش با آدرس پنل فرق داره (مخصوصاً روی
+    # Railway که برای TCP باید از قابلیت جداگانه‌ی «TCP Proxy» استفاده بشه).
     "tcp_public_host": os.environ.get("TCP_PUBLIC_HOST", "").strip(),
     "tcp_public_port": os.environ.get("TCP_PUBLIC_PORT", "").strip(),
 }
@@ -197,13 +226,10 @@ CONFIG = {
 
 LINKS: dict = {}
 SUBS: dict = {}
-# Per-subscription live usage samples. Values come from the real link used_bytes field.
-SUB_USAGE_HISTORY = defaultdict(lambda: deque(maxlen=144))
-USAGE_PERSIST_TASK = None
 SESSIONS: dict = {}
 connections: dict = {}
 CATEGORIES: dict = {}
-DAILY_STATS: dict = {}  # "YYYY-MM-DD" -> {"traffic_bytes":.., "new_links":.., "orders":.., "stars":..}
+DAILY_STATS: dict = {}  # "YYYY-MM-DD" -> {"traffic_bytes":.., "new_links":..}
 DAILY_STATS_LOCK = asyncio.Lock()
 
 
@@ -217,7 +243,7 @@ def bump_daily_stat(field: str, amount=1):
     try:
         key = _today_key()
         bucket = DAILY_STATS.setdefault(
-            key, {"traffic_bytes": 0, "new_links": 0, "orders": 0, "stars": 0}
+            key, {"traffic_bytes": 0, "new_links": 0}
         )
         bucket[field] = bucket.get(field, 0) + amount
         # keep only the last 180 days to avoid unbounded growth
@@ -258,9 +284,6 @@ error_logs = deque(maxlen=100)
 activity_logs = deque(maxlen=250)
 
 hourly_traffic = defaultdict(int)
-# Real server telemetry samples used by the dashboard charts.
-# Samples are collected from psutil; no placeholder/synthetic values are generated.
-TELEMETRY_HISTORY = deque(maxlen=90)
 
 http_client: httpx.AsyncClient | None = None
 
@@ -306,26 +329,18 @@ PROTOCOL_LABELS = {
     "manual": "پروتکل دستی (سفارشی)",
 }
 
+# توجه: قبلاً alias هایی مثل ss→shadowsocks / socks→socks5 / hy2,hysteria→hysteria2
+# وجود داشت، ولی چون shadowsocks/socks5/hysteria2 اصلاً در PROTOCOLS تعریف
+# نشده‌اند (این پنل هیچ‌کدام را واقعاً سرو نمی‌کند)، normalize_protocol همیشه
+# این‌ها را به DEFAULT_PROTOCOL برمی‌گرداند — یعنی alias های مرده و گمراه‌کننده
+# بودند. حذف شدند تا فقط alias هایی بمانند که واقعاً به یک مقدار معتبر در
+# PROTOCOLS می‌رسند.
 PROTOCOL_ALIASES = {
-    "vmess": "vmess-ws", "trojan": "trojan-ws", "ss": "shadowsocks",
-    "socks": "socks5", "hy2": "hysteria2", "hysteria": "hysteria2",
+    "vmess": "vmess-ws",
+    "trojan": "trojan-ws",
 }
 
 DEFAULT_PROTOCOL = "vless-ws"
-
-# نگاشت هر پروتکل غیر-دستی (manual) به Network/Security واقعی‌ای که در لینک
-# نهایی (generate_vless_link) استفاده می‌شود. این فقط برای نمایش صحیح در پنل
-# است (تگ‌های "ws/tls" و ...)؛ چون قبلاً این مقادیر همیشه روی مقدار پیش‌فرض
-# فیلدهای دستی (tcp/none) می‌افتادند، حتی برای پروتکل‌هایی که واقعاً ws+tls بودند.
-PROTOCOL_NETWORK_SECURITY = {
-    "vless-ws": ("ws", "tls"),
-    "vless-tcp": ("tcp", "none"),
-    "xhttp-packet-up": ("xhttp", "tls"),
-    "xhttp-stream-up": ("xhttp", "tls"),
-    "xhttp-stream-one": ("xhttp", "tls"),
-    "vmess-ws": ("ws", "tls"),
-    "trojan-ws": ("ws", "tls"),
-}
 
 FINGERPRINTS = (
     "chrome",
@@ -359,7 +374,10 @@ DEFAULT_SPEED_LIMIT = 0
 # ============================================================
 # MANUAL PROTOCOL BUILDER (پروتکل دستی — مثل پنل‌های 3x-ui/Sanaei)
 # ============================================================
-
+# این‌ها فقط برای حالت protocol == "manual" استفاده می‌شن که در آن‌ها ادمین
+# خودش شبکه (Network) و امنیت (Security) و بقیه‌ی فیلدها رو دستی وارد می‌کنه.
+# این حالت به‌صورت جدا از PROTOCOLS قدیمی نگه داشته شده تا منوی ربات فروش
+# (که از PROTOCOLS استفاده می‌کند) دست‌نخورده و برای مشتری‌ها ساده بماند.
 
 MANUAL_BASE_PROTOCOLS = ("vless", "vmess", "trojan", "shadowsocks")
 
@@ -585,6 +603,47 @@ def uptime():
     )
 
 
+# تبدیل میلادی به شمسی (الگوریتم استاندارد و متن‌باز؛ بدون نیاز به کتابخانه‌ی جدید)
+_PERSIAN_MONTHS = ["فروردین","اردیبهشت","خرداد","تیر","مرداد","شهریور","مهر","آبان","آذر","دی","بهمن","اسفند"]
+_PERSIAN_DIGITS = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
+
+
+def gregorian_to_jalali(gy: int, gm: int, gd: int):
+    g_d_m = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
+    if gy > 1600:
+        jy = 979
+        gy -= 1600
+    else:
+        jy = 0
+        gy -= 621
+    gy2 = gy + 1 if gm > 2 else gy
+    days = (365 * gy) + ((gy2 + 3) // 4) - ((gy2 + 99) // 100) + ((gy2 + 399) // 400) - 80 + gd + g_d_m[gm - 1]
+    jy += 33 * (days // 12053)
+    days %= 12053
+    jy += 4 * (days // 1461)
+    days %= 1461
+    if days > 365:
+        jy += (days - 1) // 365
+        days = (days - 1) % 365
+    if days < 186:
+        jm = 1 + days // 31
+        jd = 1 + (days % 31)
+    else:
+        jm = 7 + (days - 186) // 30
+        jd = 1 + ((days - 186) % 30)
+    return jy, jm, jd
+
+
+def jalali_date_str(dt: datetime, persian_digits: bool = True) -> str:
+    """تاریخ شمسی خوانا برای نمایش در صفحات سابسکریپشن (مثل «۲۱ مهر ۱۴۰۴»)."""
+    try:
+        jy, jm, jd = gregorian_to_jalali(dt.year, dt.month, dt.day)
+        text = f"{jd} {_PERSIAN_MONTHS[jm - 1]} {jy}"
+        return text.translate(_PERSIAN_DIGITS) if persian_digits else text
+    except Exception:
+        return dt.strftime("%Y-%m-%d")
+
+
 def fmt_bytes(value: int):
     value = int(
         value or 0
@@ -603,8 +662,13 @@ def fmt_bytes(value: int):
             f"{value / 1024 ** 2:.2f} MB"
         )
 
+    if value < 1024 ** 4:
+        return (
+            f"{value / 1024 ** 3:.2f} GB"
+        )
+
     return (
-        f"{value / 1024 ** 3:.2f} GB"
+        f"{value / 1024 ** 4:.2f} TB"
     )
 
 
@@ -685,6 +749,10 @@ def parse_speed_to_bytes(
 def is_link_expired(
     link: dict,
 ):
+    """رفع باگ: قبلاً اگر expires_at با timezone ذخیره شده بود، مقایسه‌ی
+    naive/aware با TypeError مواجه می‌شد و except آن را می‌بلعید و همیشه
+    False برمی‌گرداند (کانفیگ هرگز منقضی نمی‌شد). حالا هر دو طرف مقایسه
+    را به همان timezone (یا هر دو naive) هم‌تراز می‌کنیم."""
     expiry = link.get(
         "expires_at"
     )
@@ -693,13 +761,16 @@ def is_link_expired(
         return False
 
     try:
-        return (
-            datetime.now()
-            > datetime.fromisoformat(
-                expiry
-            )
-        )
+        expiry_dt = datetime.fromisoformat(str(expiry))
+    except Exception:
+        return False
 
+    try:
+        if expiry_dt.tzinfo is not None:
+            now = datetime.now(expiry_dt.tzinfo)
+        else:
+            now = datetime.now()
+        return now > expiry_dt
     except Exception:
         return False
 
@@ -742,6 +813,32 @@ def is_link_allowed(
         return False
 
     return True
+
+
+def link_block_reason(link: dict | None) -> str | None:
+    """چرا یک لینک اجازه‌ی اتصال ندارد؟ برای نمایش ریمارک هشدار در سابسکریپشن
+    (به‌جای حذف کامل کانفیگ از لیست) استفاده می‌شود."""
+    if link is None:
+        return "نامعتبر"
+    if not link.get("active", True):
+        return "غیرفعال"
+    if is_link_expired(link):
+        return "منقضی"
+    limit = int(link.get("limit_bytes", 0) or 0)
+    used = int(link.get("used_bytes", 0) or 0)
+    if limit > 0 and used >= limit:
+        return "حجم تمام‌شده"
+    return None
+
+
+def remark_with_status(label: str, link: dict | None) -> str:
+    """برچسب کانفیگ را برمی‌گرداند؛ اگر لینک مسدود باشد، پیشوند هشدار اضافه
+    می‌شود تا کاربر در کلاینت خودش بفهمد چرا وصل نمی‌شود (به‌جای این‌که
+    کانفیگ بی‌هیچ توضیحی از لیست حذف شود)."""
+    reason = link_block_reason(link)
+    if reason:
+        return f"⚠️ {reason} | {label}"
+    return label
 
 
 def unique_ips_for_uuid(
@@ -893,18 +990,56 @@ def _bot_settings_snapshot() -> dict:
 # PASSWORD
 # ============================================================
 
-def hash_password(
-    password: str,
-) -> str:
+# ------------------------------------------------------------------
+# رمزنگاری پسورد: PBKDF2-HMAC-SHA256 با salt تصادفی و ۲۴۰٬۰۰۰ تکرار.
+# فرمت ذخیره‌سازی: "pbkdf2$<iterations>$<salt_hex>$<hash_hex>"
+# سازگاری کامل با نسخه‌ی قدیمی: هش‌های قدیمی sha256(password+SECRET_KEY)
+# که یک رشته‌ی hex ساده (بدون "$") هستند، همچنان با verify_password درست
+# تشخیص داده می‌شوند — هیچ ادمین/سابسکریپشنی با این ارتقا قفل نمی‌شود.
+# ------------------------------------------------------------------
 
-    payload = (
-        password
-        + SECRET_KEY
-    ).encode("utf-8")
+PBKDF2_ITERATIONS = 240_000
 
-    return hashlib.sha256(
-        payload
-    ).hexdigest()
+
+def hash_password(password: str, *, salt: bytes | None = None) -> str:
+    salt = salt or secrets.token_bytes(16)
+    derived = hashlib.pbkdf2_hmac(
+        "sha256",
+        (password or "").encode("utf-8"),
+        salt,
+        PBKDF2_ITERATIONS,
+    )
+    return f"pbkdf2${PBKDF2_ITERATIONS}${salt.hex()}${derived.hex()}"
+
+
+def _hash_password_legacy(password: str) -> str:
+    """فرمت قدیمی — فقط برای verify_password (تطبیق با هش‌های ذخیره‌شده‌ی قبلی)."""
+    payload = (password + SECRET_KEY).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def verify_password(password: str, stored_hash: str | None) -> bool:
+    """رمز ورودی را با هش ذخیره‌شده مقایسه می‌کند؛ هم فرمت جدید PBKDF2 و هم
+    فرمت قدیمی sha256 را می‌شناسد تا هیچ حساب قدیمی از دسترس خارج نشود."""
+    if not stored_hash:
+        return False
+
+    password = password or ""
+
+    if stored_hash.startswith("pbkdf2$"):
+        try:
+            _, iterations_s, salt_hex, hash_hex = stored_hash.split("$", 3)
+            iterations = int(iterations_s)
+            salt = bytes.fromhex(salt_hex)
+        except Exception:
+            return False
+        candidate = hashlib.pbkdf2_hmac(
+            "sha256", password.encode("utf-8"), salt, iterations
+        ).hex()
+        return hmac.compare_digest(candidate, hash_hex)
+
+    # فرمت قدیمی: هش hex ساده‌ی sha256(password + SECRET_KEY)
+    return hmac.compare_digest(_hash_password_legacy(password), stored_hash)
 
 
 DEFAULT_ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin").strip() or "admin"
@@ -928,26 +1063,11 @@ AUTH = {
 
 ADMINS: dict = {}
 
-# ============================================================
-# ADMIN REGISTRATION REQUESTS ("ثبت‌نام ادمینی" از صفحه لاگین)
-# ============================================================
-# کاربری که می‌خواهد ادمین شود، فقط نام و آیدی تلگرام خود را از صفحه
-# لاگین ارسال می‌کند. درخواست او اینجا به‌صورت pending ذخیره می‌شود تا
-# مالک پنل از بخش «مدیریت حساب‌ها» آن را ببیند، تصمیم بگیرد چه دسترسی‌ها
-# و چه رمز/نام‌کاربری‌ای به او بدهد، و در صورت تایید حساب ادمین واقعی
-# برایش ساخته شود.
-ADMIN_REQUESTS: dict = {}
-ADMIN_REQUEST_RATE: dict = {}  # ip -> last submit timestamp (ضد اسپم ساده)
-ADMIN_REQUEST_COOLDOWN_SECONDS = 60
-ADMIN_REQUESTS_LOCK = asyncio.Lock()
-
 ALL_PERMISSIONS = {
     "dashboard": "مشاهده داشبورد",
     "inbounds": "مدیریت اینباند و کلاینت",
-    "clients": "ساخت کلاینت (بخش جدا)",
     "subscriptions": "مدیریت سابسکریپشن",
     "categories": "مدیریت دسته‌بندی",
-    "plans": "مدیریت پلن فروش",
     "reports": "گزارش‌ها",
     "messages": "مرکز پیام و خطا",
     "bot": "مدیریت ربات",
@@ -957,13 +1077,11 @@ ALL_PERMISSIONS = {
 
 BOT_TEXTS = {
     "welcome": "🛡 <b>VodiWalker Control Center</b>\n\nاز منوی زیر عملیات موردنظر را انتخاب کنید.",
-    "admin_menu": "🛠 <b>مدیریت پنل</b>\n\nساخت اینباند، کلاینت، گروه ساب و مدیریت فروش از همین‌جا در دسترس است.",
+    "admin_menu": "🛠 <b>مدیریت پنل</b>\n\nساخت اینباند، کلاینت و گروه ساب از همین‌جا در دسترس است.",
     "config_created": "✅ کانفیگ با موفقیت ساخته شد.",
     "config_deleted": "🗑 کانفیگ حذف شد.",
     "config_disabled": "⛔ کانفیگ غیرفعال شد.",
     "config_enabled": "✅ کانفیگ فعال شد.",
-    "store_intro": "🛒 <b>فروشگاه</b>\n\nپلن موردنظر را انتخاب کنید.",
-    "payment_success": "🎉 پرداخت با موفقیت انجام شد.\n\nاشتراک شما آماده است.",
 }
 
 def get_bot_text(key: str, fallback: str = "") -> str:
@@ -986,14 +1104,23 @@ async def require_permission(request: Request, permission: str):
 
 
 def verify_admin_credentials(username: str | None, password: str):
-    """Returns (ok, admin_id, role, display_name)."""
+    """Returns (ok, admin_id, role, display_name).
+
+    رفع باگ امنیتی: قبلاً اگر username خالی بود ولی password صحیح بود، به‌عنوان
+    owner لاگین می‌شد (چون شرط اول با هر username خالی True می‌شد). حالا هم
+    username و هم password باید غیرخالی باشند، وگرنه رد می‌شود.
+    """
     username = (username or "").strip()
     password = password or ""
 
-    if not username or username.lower() in {"owner", AUTH.get("username", DEFAULT_ADMIN_USERNAME).lower()}:
-        if username and username.lower() not in {"owner", AUTH.get("username", DEFAULT_ADMIN_USERNAME).lower()}:
-            return False, None, None, None
-        if hash_password(password) == AUTH["password_hash"]:
+    # هر دو فیلد باید مقدار داشته باشند؛ خالی بودن هرکدام = رد فوری.
+    if not username or not password:
+        return False, None, None, None
+
+    owner_username = AUTH.get("username", DEFAULT_ADMIN_USERNAME).lower()
+
+    if username.lower() in {"owner", owner_username}:
+        if verify_password(password, AUTH["password_hash"]):
             return True, "owner", "owner", AUTH.get("username", DEFAULT_ADMIN_USERNAME)
         return False, None, None, None
 
@@ -1001,7 +1128,7 @@ def verify_admin_credentials(username: str | None, password: str):
         if not admin.get("active", True):
             continue
         if admin.get("username", "").lower() == username.lower():
-            if hash_password(password) == admin.get("password_hash"):
+            if verify_password(password, admin.get("password_hash") or ""):
                 return True, admin_id, admin.get("role", "admin"), admin.get("username")
             return False, None, None, None
 
@@ -1086,7 +1213,7 @@ SESSION_TTL = (
     60
     * 60
     * 24
-    * 365
+    * 7
 )
 
 
@@ -1205,8 +1332,6 @@ async def require_auth(
             permission = "subscriptions"
         elif path.startswith("/api/categories"):
             permission = "categories"
-        elif path.startswith("/api/plans"):
-            permission = "plans"
         elif path.startswith("/api/reports"):
             permission = "reports"
         elif path.startswith("/api/errors") or path.startswith("/api/activity"):
@@ -1290,44 +1415,6 @@ def generate_vless_link(
         return f"trojan://{uuid}@{host}:{port_value}?security=tls&type=ws&host={quote(host)}&path={quote('/ws/'+uuid)}&sni={quote(host)}#{label}"
     return f"vless://{uuid}@{host}:{port_value}"
 
-# ============================================================
-# SUBSCRIPTION REMARK TEMPLATE (configurable, Settings -> Subscription Template)
-# ============================================================
-def build_config_remark(link: dict, uid: str) -> str:
-    """می‌سازه چه متنی به‌عنوان نام کانفیگ (#remark) داخل اپ کاربر دیده بشه.
-    پیش‌فرض دقیقاً مثل قبل فقط «نام» است؛ مالک پنل از تب تنظیمات می‌تونه
-    نمایش حجم/آی‌دی/نام اینباند رو هم فعال کنه."""
-    show_name = bool(CONFIG.get("sub_remark_show_name", True))
-    show_volume = bool(CONFIG.get("sub_remark_show_volume", False))
-    show_id = bool(CONFIG.get("sub_remark_show_id", False))
-    show_inbound = bool(CONFIG.get("sub_remark_show_inbound", False))
-
-    name = str(link.get("label") or "Config").strip() or "Config"
-    parts: list[str] = []
-
-    if show_name:
-        parts.append(name)
-
-    if show_volume:
-        try:
-            limit_bytes = int(link.get("limit_bytes") or 0)
-        except Exception:
-            limit_bytes = 0
-        parts.append(fmt_bytes(limit_bytes) if limit_bytes > 0 else "Unlimited")
-
-    if show_id:
-        parts.append(str(uid)[:8])
-
-    if show_inbound:
-        parent_id = link.get("parent_inbound_id")
-        parent = LINKS.get(parent_id) if parent_id else None
-        inbound_label = str((parent or {}).get("label") or "").strip()
-        if inbound_label:
-            parts.append(inbound_label)
-
-    return " | ".join(p for p in parts if p) or name
-
-
 def build_manual_uri(
     link: dict,
     uid: str,
@@ -1343,7 +1430,7 @@ def build_manual_uri(
     network = normalize_network(link.get("network"))
     security = normalize_security(link.get("security"))
 
-    remark = build_config_remark(link, uid)
+    remark = str(link.get("label") or "Config")
     label = quote(remark, safe="")
 
     fp = (link.get("fingerprint") or DEFAULT_FINGERPRINT).strip().lower()
@@ -1483,13 +1570,6 @@ def get_link_info(
     show_vless = len(clean_ips) <= 1 and cfg_count <= 1
     cat = CATEGORIES.get(str(link.get("category_id") or "0")) or {}
     protocol = normalize_protocol(link.get("protocol"))
-    if protocol == "manual":
-        display_network = normalize_network(link.get("network"))
-        display_security = normalize_security(link.get("security"))
-    else:
-        display_network, display_security = PROTOCOL_NETWORK_SECURITY.get(
-            protocol, ("tcp", "none")
-        )
     manual_network = normalize_network(link.get("network"))
     manual_security = normalize_security(link.get("security"))
     manual_mode = normalize_xhttp_mode(link.get("xhttp_mode"))
@@ -1512,8 +1592,8 @@ def get_link_info(
         "protocol": link.get("protocol", DEFAULT_PROTOCOL),
         "protocol_display": protocol_display_label(link),
         "base_protocol": normalize_base_protocol(link.get("base_protocol")),
-        "network": display_network,
-        "security": display_security,
+        "network": normalize_network(link.get("network")),
+        "security": normalize_security(link.get("security")),
         "manual_live": manual_live,
         "live_status": live_status,
         "live_reason": ("این پروتکل توسط هسته فعلی سرو می‌شود." if live_status == "live" else "فقط لینک ساخته می‌شود؛ برای اجرای واقعی این ترکیب به Xray-core/Inbound خارجی نیاز است."),
@@ -1627,13 +1707,17 @@ async def load_state():
             data.get("admins", {})
         )
 
-        ADMIN_REQUESTS.update(
-            data.get("admin_requests", {})
-        )
-
         DAILY_STATS.update(
             data.get("daily_stats", {})
         )
+
+        # migration: فیلدهای قدیمی "stars" و "orders" (مربوط به سیستم فروش
+        # حذف‌شده) را از باکت‌های روزانه‌ی قدیمی پاک می‌کنیم تا در state جدید
+        # دیگر ذخیره نشوند و رفرنس یتیمی باقی نماند.
+        for _bucket in DAILY_STATS.values():
+            if isinstance(_bucket, dict):
+                _bucket.pop("stars", None)
+                _bucket.pop("orders", None)
 
         # بازیابی تنظیمات پنل (آدرس عمومی + مشخصات ربات فروش)
         BOT_TEXTS.update(data.get("bot_texts") or {})
@@ -1753,9 +1837,6 @@ async def save_state():
 
                 "admins":
                     dict(ADMINS),
-
-                "admin_requests":
-                    dict(ADMIN_REQUESTS),
 
                 "daily_stats":
                     dict(DAILY_STATS),
@@ -2410,37 +2491,6 @@ async def remove_sub_group(
     return name
 
 
-async def usage_history_loop():
-    """Persist live usage history periodically so the customer graph survives restarts."""
-    while True:
-        try:
-            await asyncio.sleep(60)
-            now = now_ir()
-            ts = now.replace(second=0, microsecond=0).isoformat()
-            changed = False
-            async with LINKS_LOCK:
-                for link in LINKS.values():
-                    history = link.setdefault("usage_history", [])
-                    used = int(link.get("used_bytes", 0) or 0)
-                    limit = int(link.get("limit_bytes", 0) or 0)
-                    if history and str(history[-1].get("ts", ""))[:16] == ts[:16]:
-                        if history[-1].get("used") != used or history[-1].get("limit") != limit:
-                            history[-1]["used"] = used
-                            history[-1]["limit"] = limit
-                            changed = True
-                    else:
-                        history.append({"ts": ts, "used": used, "limit": limit})
-                        if len(history) > 144:
-                            del history[:-144]
-                        changed = True
-            if changed:
-                await save_state()
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.warning("Usage history loop error: %s", exc)
-
-
 # ============================================================
 # STARTUP
 # ============================================================
@@ -2448,7 +2498,7 @@ async def usage_history_loop():
 @app.on_event("startup")
 async def startup():
 
-    global http_client, USAGE_PERSIST_TASK
+    global http_client
 
     limits = httpx.Limits(
         max_connections=500,
@@ -2467,8 +2517,6 @@ async def startup():
     )
 
     await load_state()
-
-    USAGE_PERSIST_TASK = asyncio.create_task(usage_history_loop())
 
     await ensure_default_categories()
     await ensure_default_link()
@@ -2505,15 +2553,6 @@ async def startup():
 @app.on_event("shutdown")
 async def shutdown():
 
-    global USAGE_PERSIST_TASK
-    if USAGE_PERSIST_TASK:
-        USAGE_PERSIST_TASK.cancel()
-        try:
-            await USAGE_PERSIST_TASK
-        except asyncio.CancelledError:
-            pass
-        USAGE_PERSIST_TASK = None
-
     await save_state()
 
     if http_client:
@@ -2539,53 +2578,6 @@ async def root(request: Request):
     return RedirectResponse("/login")
 
 
-
-# ============================================================
-# VODIWALKER STORE / SUBSCRIPTION PLANS
-# ============================================================
-# Plan data now lives in sales.py (persisted to vodiwalker_plans.json)
-# and is fully editable from the "مدیریت پلن‌ها" tab in the dashboard.
-# This page is rendered fresh on every request so edits show up instantly.
-
-def _store_plan_cards(plans):
-    cards = []
-    for plan in plans:
-        cards.append(f"""
-        <article class="plan-card {'featured' if plan.get('featured') else ''}">
-          <div class="plan-badge">{escape_html(plan.get('badge') or '')}</div>
-          <div class="plan-name">{escape_html(plan.get('name',''))}</div>
-          <div class="plan-price"><strong>{plan.get('stars',0)}</strong><span> Stars</span></div>
-          <ul>
-            <li>اعتبار {plan.get('days',0)} روزه</li>
-            <li>{plan.get('volume_gb',0)}GB ترافیک</li>
-            <li>تا {plan.get('speed_mbps',0)}Mbps</li>
-            <li>{plan.get('ip_limit',0)} کاربر هم‌زمان</li>
-            <li>لینک سابسکریپشن اختصاصی</li>
-          </ul>
-          <a class="buy-btn" href="https://t.me/{escape_html(os.environ.get('TELEGRAM_BOT_USERNAME','VodiWalkerBot'))}?start=buy_{escape_html(plan.get('id',''))}">خرید از ربات فروش</a>
-        </article>
-        """)
-    return "\n".join(cards)
-
-def _store_html(plans):
-    return """<!doctype html>
-<html lang="fa" dir="rtl">
-<head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>VodiWalker — فروش اشتراک</title>
-<style>
-*{box-sizing:border-box}body{margin:0;min-height:100vh;font-family:Vazirmatn,Tahoma,Arial,sans-serif;color:#eef2ff;background:#070a12;
-background-image:radial-gradient(circle at 15% 15%,rgba(99,102,241,.18),transparent 30%),radial-gradient(circle at 85% 20%,rgba(14,165,233,.15),transparent 30%),linear-gradient(145deg,#070a12,#0b1020 55%,#060810)}
-.wrap{width:min(1120px,92%);margin:auto;padding:54px 0 70px}.hero{text-align:center;margin-bottom:38px}.logo{display:inline-flex;width:64px;height:64px;border-radius:20px;align-items:center;justify-content:center;font-size:26px;font-weight:900;background:linear-gradient(135deg,#7c3aed,#06b6d4);box-shadow:0 20px 60px rgba(76,29,149,.35)}
-h1{font-size:clamp(34px,6vw,64px);margin:18px 0 8px;letter-spacing:-2px}.sub{color:#9ca8c7;max-width:700px;margin:auto;line-height:1.9}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:34px}.plan-card{position:relative;padding:28px;border:1px solid rgba(255,255,255,.09);border-radius:28px;background:rgba(15,23,42,.86);backdrop-filter:blur(10px);box-shadow:0 25px 80px rgba(0,0,0,.25);transition:.25s;contain:layout style paint}.plan-card:hover{transform:translateY(-5px);border-color:rgba(129,140,248,.4)}.featured{border-color:rgba(99,102,241,.55);box-shadow:0 25px 90px rgba(79,70,229,.16)}.plan-badge{display:inline-block;font-size:12px;padding:7px 10px;border-radius:999px;background:rgba(99,102,241,.13);color:#b7c2ff}.plan-name{font-size:24px;font-weight:900;margin:18px 0 8px}.plan-price strong{font-size:42px}.plan-price span{color:#94a3b8}ul{padding:0;list-style:none;line-height:2.2;color:#cbd5e1;min-height:150px}.buy-btn{display:block;text-align:center;text-decoration:none;color:white;font-weight:800;padding:13px 16px;border-radius:15px;background:linear-gradient(135deg,#6366f1,#06b6d4)}.note{margin-top:26px;padding:16px;border-radius:18px;background:rgba(255,255,255,.035);color:#8fa0bf;text-align:center;font-size:13px}@media(max-width:800px){.grid{grid-template-columns:1fr}.wrap{padding-top:32px}}@media(max-width:800px),(pointer:coarse){.plan-card{backdrop-filter:none!important;-webkit-backdrop-filter:none!important;background:rgba(15,23,42,.96)}}
-</style></head><body><main class="wrap"><section class="hero"><div class="logo">V</div><h1>VodiWalker Store</h1><p class="sub">خرید سریع، تحویل خودکار و سابسکریپشن اختصاصی. پرداخت از طریق ربات فروش انجام می‌شود و بعد از پرداخت، لینک شما به‌صورت خودکار ساخته خواهد شد.</p></section><section class="grid">""" + _store_plan_cards(plans) + """</section><div class="note">پرداخت و تحویل توسط ربات رسمی VodiWalker انجام می‌شود. برای فعال‌سازی ربات، TELEGRAM_BOT_TOKEN و درگاه/Stars را تنظیم کنید.</div></main></body></html>"""
-
-@app.get("/plans", response_class=HTMLResponse)
-async def public_plans():
-    if not SALES_ENABLED:
-        return HTMLResponse("""<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>VodiWalker · Future Release</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#070b13;color:#f5f7fb;font-family:Tahoma,Arial,sans-serif}.box{width:min(560px,calc(100% - 36px));padding:42px 28px;text-align:center;border:1px solid rgba(255,255,255,.1);border-radius:28px;background:linear-gradient(145deg,#0d1320,#111a2a);box-shadow:0 30px 90px rgba(0,0,0,.35)}.ico{width:72px;height:72px;margin:0 auto 18px;display:grid;place-items:center;border-radius:22px;background:rgba(124,92,255,.15);font-size:30px}.muted{color:#9aa7bc;line-height:2;font-size:13px}.tag{display:inline-block;margin-top:18px;padding:8px 13px;border-radius:999px;background:rgba(53,214,255,.08);border:1px solid rgba(53,214,255,.2);color:#64dcff;font-size:11px}</style></head><body><main class="box"><div class="ico">🔒</div><h1>فروش اشتراک موقتاً غیرفعال است</h1><p class="muted">ماژول فروش و پلن‌ها در نسخه فعلی VodiWalker فعال نیست. این قابلیت پس از تکمیل و تست نهایی در نسخه‌های بعدی منتشر خواهد شد.</p><span class="tag">VodiWalker · Future Release</span></main></body></html>""")
-    import sales
-    return HTMLResponse(_store_html(sales.list_plans()))
 
 # ============================================================
 # HEALTH
@@ -2629,17 +2621,6 @@ async def api_telemetry(_=Depends(require_auth)):
         tx_rate = max(0, net.bytes_sent - int(prev.get("tx", net.bytes_sent))) / dt
         _telemetry_prev = {"ts": now, "rx": net.bytes_recv, "tx": net.bytes_sent}
     process = psutil.Process(os.getpid())
-    sample = {
-        "ts": datetime.now().isoformat(),
-        "cpu": _pct(cpu),
-        "ram": _pct(vm.percent),
-        "swap": _pct(swap.percent),
-        "storage": _pct(disk.percent),
-        "rx_bps": int(rx_rate),
-        "tx_bps": int(tx_rate),
-        "connections": len(connections),
-    }
-    TELEMETRY_HISTORY.append(sample)
     return {
         "ok": True,
         "cpu": _pct(cpu),
@@ -2656,7 +2637,6 @@ async def api_telemetry(_=Depends(require_auth)):
         "load": load,
         "process": {"rss": process.memory_info().rss, "cpu": _pct(process.cpu_percent(interval=None))},
         "bot_running": bool(_bot_settings_snapshot().get("running")),
-        "history": list(TELEMETRY_HISTORY),
     }
 
 
@@ -3155,7 +3135,7 @@ async def api_change_password(
     current_password = str(body.get("current_password", ""))
     current_hash = AUTH["password_hash"] if is_owner else admin_record.get("password_hash", "")
 
-    if hash_password(current_password) != current_hash:
+    if not verify_password(current_password, current_hash):
         raise HTTPException(
             status_code=400,
             detail="رمز فعلی اشتباه است",
@@ -3858,6 +3838,54 @@ async def list_links(
     }
 
 
+@app.get("/api/inbounds")
+async def list_inbounds(
+    request: Request,
+    _=Depends(require_auth),
+):
+    """فقط اینباندها (لینک‌های بدون parent_inbound_id) را برمی‌گرداند، هرکدام
+    همراه با آمار تجمیعی کلاینت‌های وابسته‌اش: تعداد کل/فعال/منقضی، مجموع
+    ترافیک مصرفی همه‌ی کلاینت‌ها، و وضعیت live/link-only بر اساس پروتکل."""
+    host = get_host(request)
+
+    async with LINKS_LOCK:
+        snapshot = dict(LINKS)
+
+    result = []
+
+    for uid, link in snapshot.items():
+
+        if link.get("parent_inbound_id"):
+            continue  # این یک کلاینت است، نه اینباند
+
+        children = [x for x in snapshot.values() if x.get("parent_inbound_id") == uid]
+
+        active_clients = sum(1 for x in children if is_link_allowed(x))
+        expired_clients = sum(1 for x in children if is_link_expired(x))
+        total_client_traffic = sum(int(x.get("used_bytes", 0) or 0) for x in children)
+
+        protocol = link.get("protocol", DEFAULT_PROTOCOL)
+        live_status = "live" if protocol in LIVE_PROTOCOLS else "link-only"
+
+        info = get_link_info(link, uid, host)
+        result.append({
+            **info,
+            "created_at": link.get("created_at"),
+            "expired": is_link_expired(link),
+            "client_count": len(children),
+            "active_client_count": active_clients,
+            "expired_client_count": expired_clients,
+            "client_total_used_bytes": total_client_traffic,
+            "client_total_used_fmt": fmt_bytes(total_client_traffic),
+            "live_status": live_status,
+            "connected_ips": len(unique_ips_for_uuid(uid)),
+        })
+
+    result.sort(key=lambda item: item.get("created_at", ""), reverse=True)
+
+    return {"ok": True, "inbounds": result}
+
+
 # ============================================================
 # LINK INFO API
 # ============================================================
@@ -4314,73 +4342,6 @@ async def reset_link_usage(
 
 
 # ============================================================
-# REGENERATE / SWAP LINK (تعویض لینک — UUID جدید، همان تنظیمات)
-# ============================================================
-# لینک قدیمی بلافاصله از کار می‌افتد (چون UUID عوض شده) و یک UUID جدید با
-# همان تنظیمات (حجم، انقضا، دسته، پروتکل، محدودیت‌ها و ...) جایگزینش می‌شود.
-# برای کلاینت‌های فرزند یک اینباند هم پشتیبانی می‌شود.
-
-@app.post("/api/links/{uid}/regenerate")
-async def regenerate_link(
-    uid: str,
-    request: Request,
-    _=Depends(require_auth),
-):
-    async with LINKS_LOCK:
-        old_link = LINKS.get(uid)
-        if not old_link:
-            raise HTTPException(status_code=404, detail="link not found")
-
-        new_uid = generate_uuid()
-        while new_uid in LINKS:
-            new_uid = generate_uuid()
-
-        new_link = dict(old_link)
-        # مصرف قبلی حفظ می‌شود (این فقط تعویض کلید/لینک است، نه ریست حجم)
-        LINKS[new_uid] = new_link
-        del LINKS[uid]
-
-        parent_id = old_link.get("parent_inbound_id")
-        sub_id = old_link.get("sub_id")
-        label = old_link.get("label", uid)
-
-        # اگر این اینباند بود، فرزندانش را به UUID جدید مادر وصل کن
-        updated_children = 0
-        for child in LINKS.values():
-            if child.get("parent_inbound_id") == uid:
-                child["parent_inbound_id"] = new_uid
-                updated_children += 1
-
-    if sub_id:
-        async with SUBS_LOCK:
-            sub = SUBS.get(sub_id)
-            if sub:
-                ids = sub.get("link_ids", [])
-                if uid in ids:
-                    ids[ids.index(uid)] = new_uid
-
-    await save_state()
-
-    log_activity(
-        "link",
-        f"لینک «{label}» تعویض شد (UUID جدید صادر شد)",
-        "warn",
-    )
-
-    host = get_host(request)
-    async with LINKS_LOCK:
-        refreshed = LINKS.get(new_uid)
-
-    return {
-        **(get_link_info(refreshed, new_uid, host) if refreshed else {}),
-        "ok": True,
-        "old_uuid": uid,
-        "uuid": new_uid,
-        "updated_children": updated_children,
-    }
-
-
-# ============================================================
 # LINK ACTION
 # ============================================================
 
@@ -4469,8 +4430,24 @@ async def link_action(
 @app.delete("/api/links/{uid}")
 async def delete_link(
     uid: str,
+    force: bool = False,
     _=Depends(require_auth),
 ):
+    # اگر این لینک یک «اینباند» با کلاینت‌های وابسته باشد، بدون تأیید صریح
+    # (force=true) حذف نمی‌شود تا کلاینت‌ها به‌صورت ناخواسته/بی‌صاحب نمانند.
+    async with LINKS_LOCK:
+        dependent_clients = [
+            cid for cid, x in LINKS.items() if x.get("parent_inbound_id") == uid
+        ]
+
+    if dependent_clients and not force:
+        raise HTTPException(
+            status_code=409,
+            detail=f"این اینباند {len(dependent_clients)} کلاینت وابسته دارد. برای حذف قطعی (همراه با کلاینت‌ها) پارامتر force=true را ارسال کنید.",
+        )
+
+    for cid in dependent_clients:
+        await remove_link(cid)
 
     label = await remove_link(uid)
 
@@ -4480,9 +4457,13 @@ async def delete_link(
             detail="link not found",
         )
 
+    if dependent_clients:
+        log_activity("link", f"اینباند «{label}» به همراه {len(dependent_clients)} کلاینت وابسته حذف شد", "warn")
+
     return {
         "ok": True,
         "deleted": uid,
+        "deleted_clients": dependent_clients,
     }
 
 
@@ -4515,32 +4496,6 @@ def subscription_metadata_headers(used_bytes: int, limit_bytes: int, expires_at,
     }
 
 # ============================================================
-# ONE SUBSCRIPTION LINK FOR BOTH APPS AND BROWSERS
-# ============================================================
-# VPN clients (v2rayNG, v2rayN, Hiddify, Clash, sing-box, ...) send a
-# non-browser User-Agent and never ask for text/html, so they keep getting
-# the raw base64 config feed below exactly as before. A normal visit from a
-# desktop/mobile browser is redirected to the rich HTML portal instead — the
-# customer only ever needs to hand out a single /sub/{uuid} link, whether
-# it's pasted into an app or opened by hand to check usage.
-_SUB_CLIENT_UA_HINTS = (
-    "v2ray", "v2rayng", "v2rayn", "hiddify", "clash", "sing-box", "sing_box",
-    "shadowrocket", "streisand", "nekobox", "nekoray", "karing", "matsuri",
-    "kitsunebi", "quantumult", "surge", "loon", "stash", "husi", "foxray",
-    "v2box", "happ", "flclash", "mihomo", "openclash", "passwall",
-    "npvtunnel", "netch", "qv2ray", "leaf", "outline", "throne", "exclave",
-    "okhttp", "curl", "wget", "python", "go-http", "libcurl",
-)
-_SUB_BROWSER_UA_HINTS = ("mozilla", "chrome", "safari", "firefox", "edg/", "opr/", "webkit", "gecko")
-
-def _subscription_wants_browser_view(request: Request) -> bool:
-    ua = (request.headers.get("user-agent") or "").lower()
-    accept = (request.headers.get("accept") or "").lower()
-    if not ua or any(h in ua for h in _SUB_CLIENT_UA_HINTS):
-        return False
-    return "text/html" in accept and any(h in ua for h in _SUB_BROWSER_UA_HINTS)
-
-# ============================================================
 # SINGLE SUB
 # ============================================================
 
@@ -4553,14 +4508,15 @@ async def subscription_single(
     async with LINKS_LOCK:
         link = LINKS.get(uuid)
 
-    if not is_link_allowed(link):
+    # رفع باگ: قبلاً کانفیگ منقضی/غیرفعال/تمام‌شده کاملاً ۴۰۴ می‌شد و کاربر
+    # هیچ توضیحی نمی‌دید. حالا فقط در صورت نبود واقعی لینک ۴۰۴ برمی‌گردد؛
+    # در غیر این صورت همان یک کانفیگ با ریمارک هشدار «⚠️ منقضی/...» نمایش
+    # داده می‌شود (اتصال واقعی همچنان در لایه‌ی relay رد می‌شود).
+    if link is None:
         raise HTTPException(
             status_code=404,
-            detail="not found or inactive",
+            detail="not found",
         )
-
-    if _subscription_wants_browser_view(request):
-        return RedirectResponse(url=f"/subscription/{uuid}", status_code=307)
 
     host = get_host(request)
     clean_ips = link.get("clean_ips") or []
@@ -4586,6 +4542,7 @@ async def subscription_single(
     else:
         time_text = "∞"
     label = str(link.get("label") or "Config")
+    label = remark_with_status(label, link)
     stats_remark = f"{label} | {volume_text} | {time_text}"
     stats_line = vless_link_for_link({**link, "label": stats_remark}, uuid, "0.0.0.0")
     lines = [stats_line]
@@ -4623,443 +4580,108 @@ async def subscription_single(
     )
 
 # ============================================================
-# LIVE SUBSCRIPTION TELEMETRY
-# ============================================================
-
-@app.get("/api/subscription/{uuid}")
-async def subscription_telemetry(uuid: str):
-    async with LINKS_LOCK:
-        link = LINKS.get(uuid)
-        if not link or not is_link_allowed(link):
-            raise HTTPException(status_code=404, detail="subscription not found or inactive")
-        used = int(link.get("used_bytes", 0) or 0)
-        limit = int(link.get("limit_bytes", 0) or 0)
-        history = list(link.get("usage_history") or [])[-144:]
-        if not history:
-            history = [{"ts": now_ir().replace(second=0, microsecond=0).isoformat(), "used": used, "limit": limit}]
-        active_ips = sorted({str(x.get("ip") or "").strip() for x in connections.values() if x.get("uuid") == uuid and str(x.get("ip") or "").strip()})
-        active_sessions = sum(1 for x in connections.values() if x.get("uuid") == uuid)
-        return {
-            "ok": True, "uuid": uuid, "active": bool(link.get("active", True)),
-            "traffic_used": used, "traffic_limit": limit,
-            "traffic_remaining": max(0, limit - used) if limit else None,
-            "traffic_percent": min(100, round((used / limit) * 100, 1)) if limit else 0,
-            "active_connections": len(active_ips), "active_sessions": active_sessions,
-            "active_ips": active_ips,
-            "connection_limit": int(link.get("connection_limit", 0) or 0),
-            "ip_limit": int(link.get("ip_limit", 0) or 0),
-            "updated_at": now_ir().isoformat(), "usage_history": history,
-        }
-
-# ============================================================
 # SMART SUBSCRIPTION PORTAL
 # ============================================================
 
-@app.get("/subscription/{uuid}", response_class=HTMLResponse)
-async def subscription_portal(uuid: str, request: Request):
-    '''Premium customer subscription portal. All figures come from live backend state.'''
+async def render_subscription_portal(uuid: str, request: Request) -> HTMLResponse:
+    """Premium customer-facing subscription portal with live usage dashboard.
+    Shared by both /subscription/{uuid} and /info/{uid} so there's a single,
+    well-maintained implementation instead of two diverging templates."""
     async with LINKS_LOCK:
         link = LINKS.get(uuid)
-        if link:
-            link = dict(link)
-    if not is_link_allowed(link):
-        raise HTTPException(status_code=404, detail="subscription not found or inactive")
-
+    # رفع باگ/بهبود: قبلاً کانفیگ منقضی/غیرفعال باعث ۴۰۴ کامل صفحه می‌شد.
+    # حالا فقط نبود واقعی لینک ۴۰۴ می‌دهد؛ وضعیت منقضی/غیرفعال در همین صفحه
+    # (بج وضعیت، رنگ قرمز/زرد) به‌وضوح نشان داده می‌شود.
+    if link is None:
+        raise HTTPException(status_code=404, detail="subscription not found")
     host = get_host(request)
     raw_url = f"{get_scheme()}://{host}/sub/{uuid}"
     info_url = f"{get_scheme()}://{host}/info/{uuid}"
     label = str(link.get("label") or "VodiWalker Subscription")
     protocol = protocol_display_label(link)
-    used = int(link.get("used_bytes", 0) or 0)
-    limit = int(link.get("limit_bytes", 0) or 0)
-    pct = min(100, round((used / limit) * 100, 1)) if limit else 0
-    remaining = max(0, limit - used) if limit else None
-    expires = str(link.get("expires_at") or "نامحدود")
-    conn_limit = int(link.get("connection_limit", 0) or 0)
-    ip_limit = int(link.get("ip_limit", 0) or 0)
-    active = bool(link.get("active", True))
-    active_ips = {str(x.get("ip") or "").strip() for x in connections.values()
-                  if x.get("uuid") == uuid and str(x.get("ip") or "").strip()}
-    active_people = len(active_ips)
-    active_sessions = sum(1 for x in connections.values() if x.get("uuid") == uuid)
-    qr = quote(raw_url, safe="")
-    initial = (label.strip()[:1] or "V").upper()
-
-    html = r'''<!doctype html><html lang="fa" dir="rtl"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#070a12"><title>__LABEL__ · VodiWalker</title>
-<link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
+    used = int(link.get("used_bytes", 0) or 0); limit = int(link.get("limit_bytes", 0) or 0)
+    pct = min(100, round((used / limit) * 100, 1)) if limit > 0 else 0
+    remaining = fmt_bytes(max(0, limit-used)) if limit > 0 else "نامحدود"
+    expires_raw = link.get("expires_at")
+    if expires_raw:
+        try:
+            expires = jalali_date_str(datetime.fromisoformat(str(expires_raw)))
+        except Exception:
+            expires = str(expires_raw)[:16]
+    else:
+        expires = "نامحدود"
+    ip_limit = int(link.get("ip_limit", 0) or 0); conn_limit = int(link.get("connection_limit", 0) or 0)
+    active = is_link_allowed(link)
+    pct_class = "crit" if pct >= 90 else ("warn" if pct >= 70 else "")
+    ring_circ = 263.89
+    ring_offset = round(ring_circ * (1 - (pct / 100)), 2)
+    days_left = None
+    expired_flag = False
+    if link.get("expires_at"):
+        try:
+            exp_dt = datetime.fromisoformat(str(link.get("expires_at")))
+            now_dt = datetime.now(exp_dt.tzinfo) if getattr(exp_dt, "tzinfo", None) else datetime.now()
+            days_left = (exp_dt - now_dt).days
+            expired_flag = is_link_expired(link)
+        except Exception:
+            days_left = None
+    if expired_flag:
+        days_text = "منقضی شده"; days_class = "crit"
+    elif days_left is None:
+        days_text = "نامحدود"; days_class = ""
+    elif days_left <= 3:
+        days_text = f"{max(days_left,0)} روز مانده"; days_class = "warn"
+    else:
+        days_text = f"{days_left} روز مانده"; days_class = ""
+    support_url = f"https://t.me/{str(SUPPORT_USERNAME).lstrip('@')}"
+    plan_badge = str(link.get("category_name") or "")
+    safe={"label":escape_html(label),"protocol":escape_html(protocol),"raw":escape_html(raw_url),"info":escape_html(info_url),"uuid":escape_html(uuid),"remaining":escape_html(remaining),"expires":escape_html(expires[:19]),"status":"فعال" if active else "غیرفعال","pct":str(pct),"pctclass":pct_class,"ringoffset":str(ring_offset),"used":escape_html(fmt_bytes(used)),"limit":escape_html(fmt_bytes(limit) if limit else "نامحدود"),"ip":str(ip_limit or 0),"conn":str(conn_limit or 0),"days":escape_html(days_text),"daysclass":days_class,"support":escape_html(support_url),"plan":escape_html(plan_badge) if plan_badge else ""}
+    qr=quote(raw_url,safe="")
+    html = r"""<!doctype html><html lang="fa" dir="rtl"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#070b13"><meta name="color-scheme" content="dark"><title>__LABEL__ · VodiWalker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700;800;900&family=Inter:wght@400;600;700;800;900&display=swap" rel="stylesheet">
 <style>
-:root{--bg:#070a12;--bg2:#0a0e19;--card:#0c111b;--card2:#101725;--line:rgba(255,255,255,.08);--text:#f8fafc;--muted:#8792a6;--soft:#59657a;--a:#8b5cf6;--a2:#6366f1;--c:#22d3ee;--g:#22c55e;--g2:#16a34a;--w:#f59e0b;--r:#ef4444;--shadow:0 24px 80px rgba(0,0,0,.35);--grid:rgba(255,255,255,.055);--url:#080c14;--radius:26px}
-body[data-theme="light"]{--bg:#f4f7fb;--bg2:#eef2f8;--card:#ffffff;--card2:#f7f9fc;--line:rgba(15,23,42,.10);--text:#0f172a;--muted:#526176;--soft:#748197;--shadow:0 20px 60px rgba(15,23,42,.10);--grid:rgba(15,23,42,.08);--url:#eef2f7}
-*{box-sizing:border-box}
-html{-webkit-text-size-adjust:100%}
-body{margin:0;min-height:100vh;background:
-    radial-gradient(circle at 12% 0%,rgba(139,92,246,.20),transparent 32%),
-    radial-gradient(circle at 100% 18%,rgba(34,211,238,.12),transparent 30%),
-    radial-gradient(circle at 30% 100%,rgba(34,197,94,.08),transparent 28%),
-    var(--bg);
-  color:var(--text);font-family:Vazirmatn,Tahoma,sans-serif;overflow-x:hidden;transition:background .25s,color .25s}
-a{text-decoration:none;color:inherit}
-button{font-family:inherit;cursor:pointer}
-.wrap{width:min(760px,calc(100% - 28px));margin:auto;padding:22px 0 118px}
-
-/* TOP BAR */
-.top{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;gap:10px}
-.brand{display:flex;gap:11px;align-items:center;min-width:0}
-.logo{width:44px;height:44px;flex:none;border-radius:15px;display:grid;place-items:center;background:linear-gradient(135deg,#1c1533,#101b2d);border:1px solid rgba(139,92,246,.4);font-weight:900;font-size:19px;box-shadow:0 0 22px rgba(139,92,246,.22)}
-.brand b{display:block;font-size:14px}
-.brand small{display:block;color:var(--soft);font-size:9px;margin-top:2px;letter-spacing:.06em}
-.top-actions{display:flex;align-items:center;gap:8px}
-.theme-btn,.lang-btn{border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:12px;padding:9px 11px;display:flex;align-items:center;gap:6px;font-size:9px;font-weight:800;transition:.2s}
-.theme-btn:hover,.lang-btn:hover{transform:translateY(-1px);border-color:rgba(139,92,246,.35)}
-.theme-btn i{font-size:15px;color:var(--a)}
-.live{display:flex;align-items:center;gap:7px;color:var(--g);font-size:9px;font-weight:800;padding:9px 12px;border:1px solid rgba(34,197,94,.2);background:rgba(34,197,94,.08);border-radius:999px;white-space:nowrap}
-.live.off{color:var(--r);border-color:rgba(239,68,68,.22);background:rgba(239,68,68,.08)}
-.dot{width:7px;height:7px;border-radius:50%;background:currentColor;box-shadow:0 0 12px currentColor;animation:pulse 1.8s infinite}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
-
-/* IDENTITY CARD */
-.identity{position:relative;overflow:hidden;border:1px solid var(--line);background:linear-gradient(150deg,rgba(20,16,34,.98),rgba(10,12,20,.98));border-radius:var(--radius);padding:24px;box-shadow:var(--shadow);margin-bottom:14px;display:grid;grid-template-columns:76px 1fr auto;gap:16px;align-items:center}
-body[data-theme="light"] .identity{background:linear-gradient(150deg,#ffffff,#f7f9fc)}
-.identity:after{content:"";position:absolute;width:320px;height:320px;left:-140px;top:-200px;background:radial-gradient(circle,rgba(139,92,246,.24),transparent 68%);pointer-events:none}
-.avatar{position:relative;width:76px;height:76px;border-radius:50%;display:grid;place-items:center;font:900 30px Arial,sans-serif;color:#fff;background:radial-gradient(circle at 38% 32%,#3a2a63,#12101c);border:2px solid rgba(139,92,246,.55);box-shadow:0 0 26px rgba(139,92,246,.35)}
-.identity h1{margin:0 0 6px;font-size:clamp(18px,4vw,23px);letter-spacing:-.02em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.identity .chips{display:flex;flex-wrap:wrap;gap:6px}
-.chip{padding:6px 10px;border:1px solid var(--line);background:rgba(255,255,255,.03);border-radius:9px;color:var(--muted);font-size:9px}
-.chip b{color:var(--text)}
-.chip.status-on{color:var(--g);border-color:rgba(34,197,94,.25);background:rgba(34,197,94,.08)}
-.chip.status-off{color:var(--r);border-color:rgba(239,68,68,.25);background:rgba(239,68,68,.08)}
-.jump-btn{justify-self:end;align-self:center;border:1px solid rgba(139,92,246,.4);background:linear-gradient(135deg,var(--a),var(--a2));color:#fff;border-radius:14px;padding:12px 16px;font-weight:800;font-size:11px;display:flex;align-items:center;gap:6px;white-space:nowrap}
-
-/* GRID */
-.grid{display:grid;grid-template-columns:1.15fr .85fr;gap:14px}
-.card{border:1px solid var(--line);background:rgba(12,17,27,.96);border-radius:24px;box-shadow:var(--shadow);overflow:hidden}
-body[data-theme="light"] .card{background:var(--card)}
-.head{padding:17px 19px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:12px;align-items:center}
-.head b{font-size:13px}
-.head small{display:block;color:var(--soft);font-size:8px;margin-top:3px}
-.body{padding:19px}
-
-.usage{display:grid;grid-template-columns:190px 1fr;gap:18px;align-items:center}
-.gauge{width:172px;height:172px;margin:auto;border-radius:50%;background:conic-gradient(var(--a) calc(var(--pct)*1%),rgba(255,255,255,.07) 0);position:relative;display:grid;place-items:center;box-shadow:0 0 55px rgba(139,92,246,.12)}
-.gauge:before{content:"";position:absolute;inset:13px;border-radius:50%;background:var(--card);border:1px solid var(--line)}
-body[data-theme="light"] .gauge:before{background:var(--card)}
-.gauge-center{position:relative;text-align:center}
-.gauge-center b{font-size:32px;letter-spacing:-.06em}
-.gauge-center small{display:block;color:var(--soft);font-size:9px;margin-top:2px}
-.metrics{display:grid;grid-template-columns:1fr 1fr;gap:9px}
-.metric{padding:13px;border:1px solid var(--line);border-radius:15px;background:var(--card2)}
-.metric small{display:block;color:var(--soft);font-size:8px}
-.metric b{display:block;margin-top:6px;font-size:15px;direction:ltr;text-align:right}
-.metric .ok{color:var(--g)}
-.metric .cyan{color:var(--c)}
-.meter{margin-top:12px;height:9px;border-radius:99px;background:rgba(255,255,255,.07);overflow:hidden}
-.meter i{display:block;height:100%;width:calc(var(--pct)*1%);border-radius:inherit;background:linear-gradient(90deg,var(--a),var(--c));transition:width .5s ease}
-.actions{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap}
-.btn{flex:1;min-width:120px;border:1px solid var(--line);border-radius:12px;padding:12px 13px;background:var(--card2);color:var(--text);font-family:inherit;font-weight:800;font-size:10.5px;text-align:center;display:flex;align-items:center;justify-content:center;gap:6px;transition:.15s}
-.btn:hover{border-color:rgba(139,92,246,.4)}
-.btn.primary{background:linear-gradient(135deg,var(--a),var(--a2));border-color:transparent;color:#fff}
-.url{direction:ltr;text-align:left;word-break:break-all;padding:13px;border:1px dashed var(--line);border-radius:12px;background:var(--url);color:#9ca9bd;font:9.5px/1.6 monospace}
-
-.livebox{display:flex;align-items:center;justify-content:space-between;padding:14px;border:1px solid rgba(34,197,94,.18);background:rgba(34,197,94,.055);border-radius:15px;margin-bottom:10px}
-.livebox b{font-size:24px;color:var(--g)}
-.livebox small{display:block;color:var(--soft);font-size:8px}
-.session{color:var(--muted);font-size:9px}
-.status{display:inline-flex;padding:6px 9px;border-radius:9px;background:rgba(34,197,94,.10);color:var(--g);font-size:8px;font-weight:800}
-.status.off{background:rgba(239,68,68,.1);color:var(--r)}
-
-.expire-card{display:grid;grid-template-columns:56px 1fr auto;gap:14px;align-items:center;padding:19px}
-.expire-icon{width:56px;height:56px;border-radius:16px;display:grid;place-items:center;font-size:24px;background:radial-gradient(circle at 35% 35%,rgba(245,158,11,.28),rgba(20,16,10,.2));border:1px solid rgba(245,158,11,.3);color:var(--w)}
-.expire-info span{display:block;color:var(--soft);font-size:9px}
-.expire-info strong{display:block;margin-top:5px;font-size:16px;direction:ltr;text-align:right}
-.shield-mini{width:46px;height:46px;border-radius:50%;display:grid;place-items:center;font-size:20px;color:var(--g);background:radial-gradient(circle,rgba(34,197,94,.18),transparent 70%);border:1px solid rgba(34,197,94,.3)}
-
-.chart{height:180px;position:relative}
-.chart svg{width:100%;height:100%;overflow:visible}
-.chart .line{fill:none;stroke:var(--c);stroke-width:3;stroke-linecap:round;stroke-linejoin:round;filter:drop-shadow(0 4px 8px rgba(34,211,238,.18))}
-.chart .area{fill:url(#area)}
-.chart .gridline{stroke:var(--grid);stroke-width:1}
-.chart .point{fill:var(--card);stroke:var(--c);stroke-width:2}
-.chart text{fill:var(--soft);font-size:8px}
-.chart .last{fill:var(--c);stroke:var(--card);stroke-width:3}
-
-.qr-wrap{display:none;place-items:center;margin-bottom:13px}
-.qr-wrap.show{display:grid}
-.qr-wrap img{width:170px;height:170px;padding:8px;background:#fff;border-radius:16px}
-
-/* APP QUICK CONNECT */
-.apps{display:grid;gap:10px;margin-top:4px}
-.app-row{display:grid;grid-template-columns:52px 1fr auto;gap:12px;align-items:center;padding:13px 14px;border-radius:18px;background:var(--card2);border:1px solid var(--line)}
-.app-icon{width:52px;height:52px;border-radius:15px;display:grid;place-items:center;font-size:23px;background:radial-gradient(circle at 35% 35%,rgba(139,92,246,.3),rgba(20,16,34,.2));border:1px solid rgba(139,92,246,.3)}
-.app-name{font-weight:800;font-size:13px}
-.app-tag{display:inline-block;margin-top:3px;padding:2px 7px;border-radius:7px;background:rgba(34,197,94,.12);color:var(--g);font-size:8px;font-weight:800}
-.app-tag.ios{background:rgba(245,158,11,.14);color:var(--w)}
-.app-go{border:1px solid rgba(139,92,246,.35);background:rgba(139,92,246,.1);color:var(--a);border-radius:11px;padding:9px 13px;font-size:10px;font-weight:800;white-space:nowrap}
-
-.note{padding:12px;border-radius:13px;background:rgba(255,255,255,.025);color:var(--muted);font-size:9px;line-height:2;margin-top:10px}
-.footer{text-align:center;color:var(--soft);font-size:8px;margin-top:18px}
-
-/* BOTTOM NAV (mobile) */
-.bottom-nav{display:none}
-@media(max-width:760px){
-  .bottom-nav{
-    display:grid;position:fixed;z-index:30;left:50%;bottom:12px;transform:translateX(-50%);
-    width:min(420px,calc(100% - 24px));grid-template-columns:repeat(3,1fr);align-items:center;
-    padding:7px;border-radius:26px;background:rgba(12,17,27,.94);border:1px solid var(--line);
-    box-shadow:0 15px 35px rgba(0,0,0,.45);backdrop-filter:blur(18px)
-  }
-  body[data-theme="light"] .bottom-nav{background:rgba(255,255,255,.94)}
-  .bottom-nav button{height:52px;border:0;background:transparent;color:var(--text);font-size:19px;border-radius:19px;display:grid;place-items:center;gap:2px}
-  .bottom-nav button small{font-size:8px;font-weight:800;color:var(--soft)}
-  .bottom-nav button.active{background:linear-gradient(135deg,rgba(139,92,246,.22),rgba(34,211,238,.14));color:var(--a)}
-  .bottom-nav button.active small{color:var(--a)}
-}
-.toast{position:fixed;top:16px;left:50%;z-index:100;transform:translate(-50%,-120px);padding:12px 18px;border-radius:14px;background:rgba(34,197,94,.14);color:var(--g);border:1px solid rgba(34,197,94,.35);transition:.3s;font-size:11px;font-weight:800;backdrop-filter:blur(10px)}
-.toast.show{transform:translate(-50%,0)}
-
-@media(max-width:800px){.grid,.usage{grid-template-columns:1fr}.gauge{width:170px;height:170px}.metrics{grid-template-columns:1fr 1fr}.identity{padding:20px}}
-@media(max-width:500px){.metrics{grid-template-columns:1fr}.wrap{width:min(100% - 18px,1120px);padding-top:14px}.identity{border-radius:21px;grid-template-columns:60px 1fr;row-gap:12px}.identity h1{font-size:17px}.jump-btn{grid-column:1/-1}.card{border-radius:20px}.expire-card{grid-template-columns:44px 1fr}.shield-mini{display:none}}
-</style></head><body><main class="wrap">
-
-<header class="top">
-  <div class="brand"><div class="logo">V</div><div><b>VodiWalker</b><small>SUBSCRIPTION CENTER</small></div></div>
-  <div class="top-actions">
-    <button class="theme-btn" id="themeBtn" type="button" onclick="toggleTheme()" aria-label="تغییر حالت نمایش"><i class="ti ti-sun-moon"></i><span id="themeLabel">روشن</span></button>
-    <div class="live" id="liveBadge"><i class="dot"></i><span id="liveState">سرویس آنلاین</span></div>
-  </div>
-</header>
-
-<section class="identity">
-  <div class="avatar">__INITIAL__</div>
-  <div>
-    <h1>__LABEL__</h1>
-    <div class="chips">
-      <span class="chip">پروتکل <b>__PROTOCOL__</b></span>
-      <span class="chip" id="statusChip">وضعیت <b id="heroStatus">__STATUS__</b></span>
-      <span class="chip">انقضا <b id="expires">__EXPIRES__</b></span>
-    </div>
-  </div>
-  <a class="jump-btn" href="#configs"><i class="ti ti-apps"></i> کانفیگ‌ها</a>
-</section>
-
-<section class="grid">
-  <div class="card">
-    <div class="head"><div><b>مصرف اشتراک</b><small>نمایش مصرف واقعی ثبت‌شده روی سرویس</small></div><span id="updated" style="color:var(--soft);font-size:8px">—</span></div>
-    <div class="body">
-      <div class="usage">
-        <div class="gauge" id="gauge" style="--pct:__PCT__"><div class="gauge-center"><b id="pct">__PCT__%</b><small>مصرف شده</small></div></div>
-        <div>
-          <div class="metrics">
-            <div class="metric"><small>مصرف شده</small><b class="cyan" id="used">__USED__</b></div>
-            <div class="metric"><small>باقی‌مانده</small><b class="ok" id="remaining">__REMAINING__</b></div>
-            <div class="metric"><small>سقف اشتراک</small><b id="limit">__LIMIT__</b></div>
-            <div class="metric"><small>درصد مصرف</small><b id="summaryPct">__PCT__%</b></div>
-          </div>
-          <div class="meter"><i id="meter"></i></div>
-          <div class="note">عدد مصرف از شمارنده واقعی سرویس خوانده می‌شود؛ با هر بار افزایش ترافیک، مقدار و نمودار به‌روزرسانی می‌شوند.</div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <div class="card">
-    <div class="head"><div><b>اتصال‌های فعال</b><small>کاربران آنلاین همین لحظه</small></div><span class="status" id="statusBadge">فعال</span></div>
-    <div class="body">
-      <div class="livebox">
-        <div><b id="liveConnections">__ACTIVE_CONN__</b><small>دستگاه / IP یکتا</small></div>
-        <div style="text-align:left"><span class="session" id="sessions">__ACTIVE_SESSIONS__ session</span><br><span class="session" id="connectionLimit">__CONN_LIMIT__</span></div>
-      </div>
-      <div class="metric"><small>محدودیت IP</small><b id="ipLimit">__IP_LIMIT__</b></div>
-      <div class="note">برای جلوگیری از نمایش عدد غیرواقعی، یک IP فقط یک کاربر فعال محسوب می‌شود؛ Sessionهای فنی جداگانه نمایش داده می‌شود.</div>
-      <div class="actions">
-        <button class="btn primary" onclick="copyLink()"><i class="ti ti-copy"></i> کپی لینک اشتراک</button>
-        <a class="btn" href="__INFO_URL__"><i class="ti ti-info-circle"></i> اطلاعات سرویس</a>
-      </div>
-    </div>
-  </div>
-</section>
-
-<section class="card" style="margin-top:14px">
-  <div class="head"><div><b>روند مصرف</b><small>تغییرات ثبت‌شده مصرف اشتراک</small></div><span id="chartState" style="color:var(--soft);font-size:8px">در حال همگام‌سازی</span></div>
-  <div class="body"><div class="chart" id="chart"><svg viewBox="0 0 900 190" preserveAspectRatio="none"><defs><linearGradient id="area" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#22d3ee" stop-opacity=".24"/><stop offset="1" stop-color="#22d3ee" stop-opacity="0"/></linearGradient></defs><g id="gridLines"></g><path id="areaPath" class="area"></path><path id="linePath" class="line"></path><g id="chartPoints"></g><text x="895" y="184" text-anchor="end">زمان</text></svg></div></div>
-</section>
-
-<section class="card" style="margin-top:14px">
-  <div class="expire-card">
-    <div class="expire-icon"><i class="ti ti-calendar-due"></i></div>
-    <div class="expire-info"><span>انقضای اشتراک</span><strong id="expireStrong">__EXPIRES__</strong></div>
-    <div class="shield-mini"><i class="ti ti-shield-check"></i></div>
-  </div>
-</section>
-
-<section class="card" style="margin-top:14px" id="linkCard">
-  <div class="head"><div><b>لینک اصلی اشتراک</b><small>برای وارد کردن در کلاینت سازگار</small></div>
-    <button class="btn" style="flex:none;padding:8px 12px" onclick="toggleQr()"><i class="ti ti-qrcode"></i> QR</button>
-  </div>
-  <div class="body">
-    <div class="qr-wrap" id="qrWrap"><img src="https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=__QR__" alt="QR"></div>
-    <div class="url" id="subUrl">__RAW__</div>
-    <div class="actions">
-      <button class="btn primary" onclick="copyLink()"><i class="ti ti-copy"></i> کپی لینک</button>
-      <a class="btn" href="__RAW_URL__" target="_blank" rel="noopener"><i class="ti ti-external-link"></i> باز کردن لینک</a>
-    </div>
-  </div>
-</section>
-
-<section class="card" style="margin-top:14px" id="configs">
-  <div class="head"><div><b>اتصال سریع</b><small>باز کردن مستقیم در برنامه کلاینت</small></div></div>
-  <div class="body">
-    <div class="apps">
-      <div class="app-row">
-        <div class="app-icon"><i class="ti ti-brand-android"></i></div>
-        <div><div class="app-name">v2rayNG</div><span class="app-tag">اندروید</span></div>
-        <button class="app-go" onclick="quickConnect('v2rayng://install-config?url='+encodeURIComponent(SUB_URL))">اتصال</button>
-      </div>
-      <div class="app-row">
-        <div class="app-icon"><i class="ti ti-shield-bolt"></i></div>
-        <div><div class="app-name">Hiddify</div><span class="app-tag">اندروید / iOS / ویندوز</span></div>
-        <button class="app-go" onclick="quickConnect('hiddify://import/'+encodeURIComponent(SUB_URL))">اتصال</button>
-      </div>
-      <div class="app-row">
-        <div class="app-icon"><i class="ti ti-brand-apple"></i></div>
-        <div><div class="app-name">Streisand</div><span class="app-tag ios">iOS</span></div>
-        <button class="app-go" onclick="quickConnect('streisand://import/'+encodeURIComponent(SUB_URL))">اتصال</button>
-      </div>
-      <div class="app-row">
-        <div class="app-icon"><i class="ti ti-device-laptop"></i></div>
-        <div><div class="app-name">NekoBox</div><span class="app-tag">دسکتاپ</span></div>
-        <button class="app-go" onclick="copyLink()">کپی لینک</button>
-      </div>
-    </div>
-    <div class="note">در صورتی که برنامه به‌صورت خودکار باز نشد، برنامه را نصب کرده و لینک کپی‌شده را به‌صورت دستی وارد کنید.</div>
-  </div>
-</section>
-
-<div class="footer">VodiWalker · وضعیت و مصرف به‌صورت زنده از سرویس خوانده می‌شود</div>
-</main>
-
-<nav class="bottom-nav">
-  <button class="active" onclick="copyLink()"><i class="ti ti-link"></i><small>کپی لینک</small></button>
-  <button onclick="document.getElementById('configs').scrollIntoView({behavior:'smooth'})"><i class="ti ti-apps"></i><small>کانفیگ‌ها</small></button>
-  <button onclick="toggleTheme()"><i class="ti ti-sun-moon"></i><small>تم</small></button>
-</nav>
-
-<div class="toast" id="toast">کپی شد ✓</div>
-
-<script>
-const SUB_URL=__RAW_JS__;
-function fmt(n){n=Number(n)||0;if(!n)return'0 B';const u=['B','KB','MB','GB','TB'];let i=0;while(n>=1024&&i<u.length-1){n/=1024;i++}return(n>=100?Math.round(n):n>=10?n.toFixed(1):n.toFixed(2))+' '+u[i]}
-
-function showToast(text){
-  const toast=document.getElementById('toast');
-  toast.textContent=text;
-  toast.classList.add('show');
-  clearTimeout(window.toastTimer);
-  window.toastTimer=setTimeout(()=>toast.classList.remove('show'),2200);
-}
-
-async function copyLink(){
-  try{
-    await navigator.clipboard.writeText(SUB_URL);
-    showToast('لینک اشتراک کپی شد ✓');
-  }catch(e){
-    try{
-      const ta=document.createElement('textarea');
-      ta.value=SUB_URL;ta.style.position='fixed';ta.style.opacity='0';
-      document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();
-      showToast('لینک اشتراک کپی شد ✓');
-    }catch(e2){ prompt('لینک اشتراک:',SUB_URL); }
-  }
-}
-
-function quickConnect(deepLink){
-  copyLink();
-  window.location.href=deepLink;
-}
-
-function toggleQr(){
-  document.getElementById('qrWrap').classList.toggle('show');
-}
-
-function applyTheme(){
-  const t=localStorage.getItem('vw_sub_theme')||'dark';
-  document.body.dataset.theme=t;
-  const light=t==='light';
-  document.getElementById('themeLabel').textContent=light?'تیره':'روشن';
-  document.querySelector('#themeBtn i').className=light?'ti ti-moon':'ti ti-sun-moon';
-}
-function toggleTheme(){
-  const next=(document.body.dataset.theme||'dark')==='dark'?'light':'dark';
-  localStorage.setItem('vw_sub_theme',next);
-  applyTheme();
-}
-applyTheme();
-
-function drawChart(history,limit){
-  const line=document.getElementById('linePath'),area=document.getElementById('areaPath'),grid=document.getElementById('gridLines'),points=document.getElementById('chartPoints');
-  const clean=Array.isArray(history)?history.filter(x=>Number.isFinite(Number(x.used))).slice(-144):[];
-  if(clean.length<2){
-    line.setAttribute('d','M 0 158 L 900 158');area.setAttribute('d','M 0 158 L 900 158 L 900 170 L 0 170 Z');grid.innerHTML='';points.innerHTML='';document.getElementById('chartState').textContent='در حال جمع‌آوری داده واقعی';return;
-  }
-  const vals=clean.map(x=>Number(x.used)||0),max=Math.max(Number(limit)||0,...vals,1),min=0;
-  const top=14,bottom=162,height=bottom-top;
-  grid.innerHTML=[0,.25,.5,.75,1].map(r=>{const y=bottom-height*r;return `<line class="gridline" x1="0" y1="${y}" x2="900" y2="${y}"></line><text x="0" y="${y-4}">${fmt(vals.length?max*r:0)}</text>`}).join('');
-  const pts=vals.map((v,i)=>{const x=i*(900/Math.max(1,vals.length-1));const y=bottom-((v-min)/(max-min))*height;return[x,y]});
-  const d=pts.map((p,i)=>(i?'L':'M')+' '+p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' ');
-  line.setAttribute('d',d);area.setAttribute('d',d+' L '+pts[pts.length-1][0].toFixed(1)+' '+bottom+' L 0 '+bottom+' Z');
-  points.innerHTML=pts.map((p,i)=>{const h=clean[i]?.ts?new Date(clean[i].ts).toLocaleString('fa-IR',{hour:'2-digit',minute:'2-digit'}):'';return `<circle class="point ${i===pts.length-1?'last':''}" cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="${i===pts.length-1?5:2.2}"><title>${h} · ${fmt(vals[i])}</title></circle>`}).join('');
-  document.getElementById('chartState').textContent=`${clean.length} نقطه واقعی · آخرین مقدار ${fmt(vals[vals.length-1])}`;
-}
-
-async function refresh(){
-  try{
-    const r=await fetch('/api/subscription/__UUID__',{cache:'no-store'});
-    if(!r.ok)return;
-    const d=await r.json();
-    const lim=Number(d.traffic_limit||0),used=Number(d.traffic_used||0),p=lim?Math.min(100,Math.round(used/lim*1000)/10):0;
-    document.getElementById('gauge').style.setProperty('--pct',p);
-    document.getElementById('pct').textContent=p+'%';
-    document.getElementById('summaryPct').textContent=p+'%';
-    document.getElementById('used').textContent=fmt(used);
-    document.getElementById('limit').textContent=lim?fmt(lim):'نامحدود';
-    document.getElementById('remaining').textContent=lim?fmt(Math.max(0,lim-used)):'نامحدود';
-    document.getElementById('meter').style.width=p+'%';
-    const active=Number(d.active_connections||0);
-    document.getElementById('liveConnections').textContent=active;
-    document.getElementById('sessions').textContent=Number(d.active_sessions||0)+' session';
-    document.getElementById('connectionLimit').textContent=Number(d.connection_limit||0)?'حداکثر '+d.connection_limit+' اتصال':'بدون محدودیت اتصال';
-    document.getElementById('ipLimit').textContent=Number(d.ip_limit||0)?'حداکثر '+d.ip_limit+' IP':'بدون محدودیت';
-    const statusText=d.active?'فعال':'غیرفعال';
-    document.getElementById('heroStatus').textContent=statusText;
-    document.getElementById('liveState').textContent=d.active?'سرویس آنلاین':'سرویس غیرفعال';
-    document.getElementById('liveBadge').classList.toggle('off',!d.active);
-    document.getElementById('statusBadge').textContent=statusText;
-    document.getElementById('statusBadge').classList.toggle('off',!d.active);
-    document.getElementById('statusChip').classList.toggle('status-on',!!d.active);
-    document.getElementById('statusChip').classList.toggle('status-off',!d.active);
-    const now=new Date().toLocaleTimeString('fa-IR',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
-    document.getElementById('updated').textContent=now;
-    drawChart(d.usage_history,lim);
-  }catch(e){
-    document.getElementById('chartState').textContent='همگام‌سازی ناموفق';
-  }
-}
-refresh();setInterval(()=>{if(!document.hidden)refresh()},10000);
-</script></body></html>'''
-    replacements={
-      '__LABEL__':escape_html(label),'__PROTOCOL__':escape_html(protocol),'__EXPIRES__':escape_html(expires[:19]),
-      '__STATUS__':'فعال' if active else 'غیرفعال','__PCT__':str(pct),'__USED__':escape_html(fmt_bytes(used)),
-      '__REMAINING__':escape_html(fmt_bytes(remaining) if remaining is not None else 'نامحدود'),
-      '__LIMIT__':escape_html(fmt_bytes(limit) if limit else 'نامحدود'),'__ACTIVE_CONN__':str(active_people),
-      '__ACTIVE_SESSIONS__':str(active_sessions),'__CONN_LIMIT__':('حداکثر '+str(conn_limit)+' اتصال') if conn_limit else 'بدون محدودیت اتصال',
-      '__IP_LIMIT__':('حداکثر '+str(ip_limit)+' IP') if ip_limit else 'بدون محدودیت','__RAW__':escape_html(raw_url),
-      '__RAW_URL__':escape_html(raw_url),'__INFO_URL__':escape_html(info_url),'__QR__':qr,'__UUID__':escape_html(uuid),
-      '__RAW_JS__':repr(raw_url),'__INITIAL__':escape_html(initial),
-    }
+:root{--bg:#060910;--panel:#0c111a;--panel2:#101725;--line:rgba(255,255,255,.085);--muted:#8c98ab;--soft:#5f6b7e;--text:#f5f7fb;--accent:#8b5cf6;--cyan:#35d6ff;--green:#35d399;--shadow:0 30px 90px rgba(0,0,0,.34)}*{box-sizing:border-box}body{margin:0;min-height:100vh;color:var(--text);font-family:Vazirmatn,Inter,sans-serif;background:radial-gradient(circle at 15% -5%,rgba(139,92,246,.20),transparent 28%),radial-gradient(circle at 90% 8%,rgba(53,214,255,.11),transparent 23%),linear-gradient(180deg,#080c14,#05070c);overflow-x:hidden}body:before{content:"";position:fixed;inset:0;pointer-events:none;opacity:.45;background-image:linear-gradient(rgba(255,255,255,.025) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px);background-size:42px 42px;mask-image:linear-gradient(to bottom,#000,transparent 90%)}.wrap{position:relative;z-index:1;width:min(1180px,calc(100% - 28px));margin:auto;padding:24px 0 60px}.topbar{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:15px}.brand{display:flex;align-items:center;gap:11px}.mark{width:43px;height:43px;border-radius:14px;display:grid;place-items:center;font-size:18px;font-weight:900;background:linear-gradient(145deg,#17142b,#0d1726);border:1px solid rgba(139,92,246,.32);box-shadow:0 0 35px rgba(139,92,246,.14),inset 0 0 25px rgba(139,92,246,.08);animation:markGlow 3.2s ease-in-out infinite}@keyframes markGlow{0%,100%{box-shadow:0 0 35px rgba(139,92,246,.14),inset 0 0 25px rgba(139,92,246,.08)}50%{box-shadow:0 0 46px rgba(139,92,246,.26),inset 0 0 30px rgba(139,92,246,.14)}}.brand b{display:block;font-size:14px}.brand small{display:block;color:var(--soft);font-size:8px;letter-spacing:.13em;margin-top:2px}.live{display:flex;align-items:center;gap:7px;padding:8px 11px;border:1px solid rgba(53,211,153,.24);background:rgba(53,211,153,.07);border-radius:999px;color:#7eeac0;font-size:9px;font-weight:800}.dot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 12px rgba(53,211,153,.9)}.hero{position:relative;overflow:hidden;border:1px solid var(--line);border-radius:28px;padding:28px;background:linear-gradient(135deg,rgba(16,23,35,.94),rgba(8,12,19,.90));box-shadow:var(--shadow);margin-bottom:13px}.hero:after{content:"";position:absolute;width:340px;height:340px;left:-160px;top:-230px;border-radius:50%;background:radial-gradient(circle,rgba(139,92,246,.28),transparent 66%)}.hero-grid{position:relative;z-index:1;display:grid;grid-template-columns:minmax(0,1fr) 220px;gap:25px;align-items:center}.eyebrow{font-size:9px;color:#8f9bae;letter-spacing:.16em;font-weight:900}.hero h1{margin:9px 0 7px;font-size:clamp(27px,5vw,48px);line-height:1.08;letter-spacing:-.04em}.hero p{margin:0;max-width:720px;color:var(--muted);font-size:11px;line-height:2}.chips{display:flex;flex-wrap:wrap;gap:7px;margin-top:15px}.chip{padding:7px 9px;border-radius:10px;border:1px solid var(--line);background:rgba(255,255,255,.035);font-size:9px;color:#bac4d1}.chip b{color:#fff}.hero-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:16px}.btn{border:0;text-decoration:none;cursor:pointer;color:#fff;padding:10px 13px;border-radius:11px;background:linear-gradient(135deg,#8b5cf6,#4d7cff);font:800 10px Vazirmatn;box-shadow:0 12px 28px rgba(76,91,255,.18);transition:transform .15s ease,box-shadow .15s ease}.btn:hover{transform:translateY(-1px);box-shadow:0 16px 36px rgba(76,91,255,.3)}.btn.alt{background:#121a28;border:1px solid var(--line);box-shadow:none;color:#dfe6ef}.btn.alt:hover{border-color:rgba(139,92,246,.4);background:#16202f}.qrbox{padding:13px;border:1px solid var(--line);border-radius:21px;background:rgba(0,0,0,.18);text-align:center;transition:transform .2s ease}.qrbox:hover{transform:translateY(-2px)}.qrbox img{width:170px;height:170px;padding:8px;background:#fff;border-radius:14px}.qrbox small{display:block;color:var(--soft);font-size:8px;margin-top:7px}.grid{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(300px,.55fr);gap:13px}.panel{border:1px solid var(--line);border-radius:22px;background:rgba(12,17,26,.86);overflow:hidden;box-shadow:0 18px 60px rgba(0,0,0,.18)}.head{display:flex;align-items:center;justify-content:space-between;padding:15px 17px;border-bottom:1px solid var(--line)}.head b{font-size:11px}.head small{display:block;color:var(--soft);font-size:8px;margin-top:3px}.body{padding:16px}.usage{display:grid;grid-template-columns:1fr 100px;gap:18px;align-items:center}.usage-label{color:var(--soft);font-size:8px}.usage-number{font-size:24px;font-weight:900;margin-top:3px}.progress{height:9px;background:#182130;border-radius:99px;overflow:hidden;margin:13px 0 8px}.progress i{display:block;height:100%;width:__PCT__%;background:linear-gradient(90deg,var(--accent),var(--cyan));box-shadow:0 0 20px rgba(53,214,255,.18)}.progress i.warn{background:linear-gradient(90deg,#f5a524,#f59e0b);box-shadow:0 0 20px rgba(245,165,36,.2)}.progress i.crit{background:linear-gradient(90deg,#f24955,#ef4444);box-shadow:0 0 20px rgba(242,73,85,.22)}.usage-note{color:var(--soft);font-size:8px}.badge-days{display:inline-flex;padding:2px 8px;border-radius:99px;font-size:8px;font-weight:800;background:rgba(255,255,255,.06);color:var(--muted);margin-right:6px}.badge-days.warn{background:rgba(245,165,36,.15);color:#f5a524}.badge-days.crit{background:rgba(242,73,85,.15);color:#f24955}.ring{width:104px;height:104px;position:relative;margin:auto}.ring svg{width:100%;height:100%;transform:rotate(-90deg)}.ring-track{fill:none;stroke:#182130;stroke-width:9}.ring-bar{fill:none;stroke:url(#ringGrad);stroke-width:9;stroke-linecap:round;stroke-dasharray:263.89;transition:stroke-dashoffset .6s ease;filter:drop-shadow(0 0 6px rgba(53,214,255,.4))}.ring.warn .ring-bar{stroke:#f5a524;filter:drop-shadow(0 0 6px rgba(245,165,36,.38))}.ring.crit .ring-bar{stroke:#f24955;filter:drop-shadow(0 0 6px rgba(242,73,85,.38))}.ring-center{position:absolute;inset:0;display:grid;place-items:center;text-align:center}.ring-center strong{font-size:17px}.ring-center small{display:block;color:var(--soft);font-size:7px;margin-top:2px}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:12px}.stat{padding:11px;border:1px solid var(--line);border-radius:13px;background:rgba(255,255,255,.018)}.stat small{display:block;color:var(--soft);font-size:8px;margin-bottom:5px}.stat b{font-size:10px}.url{padding:12px;border-radius:13px;background:#080d15;border:1px solid var(--line);direction:ltr;text-align:left;word-break:break-all;color:#b8c7ff;font:9px/1.8 ui-monospace,Consolas,monospace}.copyrow{display:grid;grid-template-columns:1fr 90px;gap:7px;margin-top:8px}.mini-btn{padding:10px;border-radius:11px;border:1px solid var(--line);background:#111a28;color:#e5eaf2;font:800 9px Vazirmatn;cursor:pointer}.info-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.fact{padding:11px;border:1px solid var(--line);border-radius:13px;background:rgba(255,255,255,.018)}.fact small{display:block;color:var(--soft);font-size:8px}.fact b{display:block;margin-top:5px;font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.notice{margin-top:10px;padding:11px;border:1px solid rgba(53,214,255,.13);background:rgba(53,214,255,.045);border-radius:13px;color:#9cb0c6;font-size:8px;line-height:2}.apps{display:grid;grid-template-columns:repeat(3,1fr);gap:7px}.app{padding:10px;border:1px solid var(--line);border-radius:12px;background:#0d141f;display:flex;flex-direction:column;align-items:center;gap:6px;text-align:center;text-decoration:none;transition:transform .18s ease,border-color .18s ease}.app:hover{transform:translateY(-2px);border-color:rgba(139,92,246,.4)}.app-ico{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;font-size:14px}.app b{display:block;font-size:9px}.app small{color:var(--soft);font-size:7px}.brand b{background:linear-gradient(135deg,#fff,#c3b3ff);-webkit-background-clip:text;background-clip:text;color:transparent}.trust-row{display:flex;gap:16px;flex-wrap:wrap;margin-top:14px}.trust-row span{display:flex;align-items:center;gap:6px;font-size:9px;color:var(--muted)}@keyframes fadeUp{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)}}.hero,.panel{animation:fadeUp .55s ease both;backdrop-filter:blur(16px);transition:box-shadow .25s ease,border-color .25s ease;contain:layout style paint}.panel:hover{border-color:rgba(139,92,246,.22);box-shadow:0 22px 70px rgba(0,0,0,.28)}.bg-orb{position:fixed;border-radius:50%;filter:blur(48px);pointer-events:none;z-index:0;will-change:transform;contain:strict;transform:translateZ(0)}.bg-orb1{width:360px;height:360px;top:-140px;left:-110px;background:#8b5cf6;opacity:.28;animation:orbFloat1 15s ease-in-out infinite}.bg-orb2{width:300px;height:300px;top:35%;right:-130px;background:#35d6ff;opacity:.16;animation:orbFloat2 19s ease-in-out infinite}.bg-orb3{width:240px;height:240px;bottom:-110px;left:28%;background:#35d399;opacity:.14;animation:orbFloat2 22s ease-in-out infinite reverse}@keyframes orbFloat1{0%,100%{transform:translate(0,0)}50%{transform:translate(35px,45px)}}@keyframes orbFloat2{0%,100%{transform:translate(0,0)}50%{transform:translate(-45px,-30px)}}.fact{position:relative;cursor:pointer;transition:.15s ease}.fact:hover{border-color:rgba(139,92,246,.4);background:rgba(139,92,246,.06)}.fact-copy{position:absolute;top:8px;left:8px;opacity:.4;font-size:9px}.trust-row span{padding:6px 10px;border:1px solid var(--line);border-radius:999px;background:rgba(255,255,255,.03)}.footer{text-align:center;color:#4f5a6c;font-size:8px;padding-top:20px}.toast{position:fixed;z-index:9;left:50%;bottom:20px;transform:translate(-50%,18px);opacity:0;padding:10px 13px;border-radius:11px;background:#111a28;border:1px solid var(--line);box-shadow:0 20px 50px rgba(0,0,0,.35);font-size:9px;transition:.2s}.toast.show{opacity:1;transform:translate(-50%,0)}@media(max-width:850px){.hero-grid,.grid{grid-template-columns:1fr}.qrbox{max-width:230px}.stats{grid-template-columns:1fr 1fr}}@media(max-width:520px){.wrap{width:calc(100% - 18px);padding-top:12px}.hero{padding:20px;border-radius:22px}.usage{grid-template-columns:1fr}.ring{display:none}.stats,.info-grid,.apps{grid-template-columns:1fr 1fr}.copyrow{grid-template-columns:1fr}.hero-actions .btn{flex:1}}@media(prefers-reduced-motion:reduce){.mark,.bg-orb,.hero,.panel{animation:none!important}}@media(max-width:820px),(pointer:coarse){.bg-orb{animation:none!important;filter:blur(26px);opacity:.14}.hero,.panel{backdrop-filter:none!important;-webkit-backdrop-filter:none!important}.hero{background:linear-gradient(135deg,rgba(20,28,44,.98),rgba(9,13,21,.98))}.panel{background:rgba(12,17,26,.98)}#qrModal{backdrop-filter:none!important;-webkit-backdrop-filter:none!important}}
+</style></head><body><svg width="0" height="0" style="position:absolute"><defs><linearGradient id="ringGrad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#8b5cf6"/><stop offset="100%" stop-color="#35d6ff"/></linearGradient></defs></svg><div class="bg-orb bg-orb1"></div><div class="bg-orb bg-orb2"></div><div class="bg-orb bg-orb3"></div><main class="wrap">
+<div class="topbar"><div class="brand"><div class="mark">✦</div><div><b>VodiWalker</b><small>PREMIUM SUBSCRIPTION CENTER</small></div></div><div class="live"><span class="dot"></span><span id="status">__STATUS__</span></div></div>
+<section class="hero"><div class="hero-grid"><div><div class="eyebrow">SECURE PERSONAL ACCESS</div><h1>__LABEL__</h1><p>مرکز مدیریت اختصاصی اشتراک شما؛ مصرف، ظرفیت، وضعیت سرویس و لینک اتصال در یک صفحه سریع و حرفه‌ای.</p><div class="chips"><span class="chip">پروتکل <b>__PROTOCOL__</b></span>__PLAN_CHIP__<span class="chip">IP Limit <b>__IP__</b></span><span class="chip">Connection <b>__CONN__</b></span><span class="chip">UUID <b dir="ltr">__UUID_SHORT__</b></span><span class="badge-days __DAYSCLASS__" id="daysBadge">__DAYS__</span></div><div class="trust-row"><span>🔒 رمزنگاری TLS/Reality</span><span>⚡ لتنسی پایین</span><span>🛡️ پایش امنیتی ۲۴/۷</span></div><div class="hero-actions"><button class="btn" onclick="copyText(__RAW_JS__)">کپی Subscription</button><a class="btn alt" href="__INFO__">مشاهده جزئیات</a><a class="btn alt" href="__SUPPORT__" target="_blank">پشتیبانی</a><button class="btn alt" onclick="shareLink()">اشتراک‌گذاری</button></div></div><div class="qrbox"><img src="https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=__QR__" alt="Subscription QR"><small>اسکن برای افزودن اشتراک</small></div></div></section>
+<div class="grid"><section><div class="panel"><div class="head"><div><b>مصرف و ظرفیت</b><small>Live subscription telemetry</small></div><span id="updated" style="font-size:8px;color:var(--soft)">—</span></div><div class="body"><div class="usage"><div><div class="usage-label">مصرف فعلی</div><div class="usage-number" id="traffic">__USED__ / __LIMIT__</div><div class="progress"><i id="progress" class="__PCTCLASS__"></i></div><div class="usage-note">باقی‌مانده: <b id="remaining">__REMAINING__</b></div></div><div class="ring __PCTCLASS__" id="ringBox"><svg viewBox="0 0 100 100"><circle class="ring-track" cx="50" cy="50" r="42"></circle><circle class="ring-bar" id="ringBar" cx="50" cy="50" r="42" style="stroke-dashoffset:__RINGOFFSET__"></circle></svg><div class="ring-center"><strong id="pct">__PCT__%</strong><small>مصرف</small></div></div></div><div class="stats"><div class="stat"><small>وضعیت</small><b id="liveState">__STATUS__</b></div><div class="stat"><small>انقضا</small><b id="expiry">__EXPIRES__</b></div><div class="stat"><small>IP Limit</small><b>__IP__</b></div><div class="stat"><small>Connection</small><b>__CONN__</b></div></div></div></div><div class="panel" style="margin-top:13px"><div class="head"><div><b>لینک اشتراک</b><small>برای کلاینت‌های سازگار</small></div></div><div class="body"><div class="url" id="subUrl">__RAW__</div><div class="copyrow"><button class="mini-btn" onclick="copyText(__RAW_JS__)">کپی لینک</button><button class="mini-btn" onclick="downloadSub()">دریافت فایل</button></div><div class="notice">لینک Subscription را داخل کلاینت وارد کنید. آدرس عمومی با دامنه تنظیم‌شده پنل و شبکه Railway هماهنگ می‌ماند.</div></div></div></section>
+<aside><div class="panel"><div class="head"><div><b>پروفایل اتصال</b><small>روی هر کارت بزن تا کپی بشه</small></div></div><div class="body"><div class="info-grid"><div class="fact" onclick="copyFact(this)"><small>Protocol</small><b dir="ltr">__PROTOCOL__</b><i class="fact-copy">⧉</i></div><div class="fact" onclick="copyFact(this)"><small>Network</small><b dir="ltr">__NETWORK__</b><i class="fact-copy">⧉</i></div><div class="fact" onclick="copyFact(this)"><small>Security</small><b dir="ltr">__SECURITY__</b><i class="fact-copy">⧉</i></div><div class="fact" onclick="copyFact(this)"><small>Address</small><b dir="ltr">__ADDRESS__</b><i class="fact-copy">⧉</i></div></div></div></div><div class="panel" style="margin-top:13px"><div class="head"><div><b>کلاینت‌های پیشنهادی</b><small>Import subscription in one step</small></div></div><div class="body"><div class="apps"><a class="app" href="https://github.com/2dust/v2rayNG/releases/latest" target="_blank"><div class="app-ico" style="background:rgba(34,197,139,.14);color:#22c58b">🤖</div><b>v2rayNG</b><small>Android</small></a><a class="app" href="https://github.com/2dust/v2rayN/releases/latest" target="_blank"><div class="app-ico" style="background:rgba(53,214,255,.14);color:#35d6ff">🖥️</div><b>v2rayN</b><small>Desktop</small></a><a class="app" href="https://github.com/hiddify/hiddify-app/releases/latest" target="_blank"><div class="app-ico" style="background:rgba(139,92,246,.14);color:#a997ff">🌐</div><b>Hiddify</b><small>Multi-platform</small></a></div></div></div></aside></div><div class="footer">VodiWalker · Premium Subscription Center · Live update enabled</div></main><div class="toast" id="toast">کپی شد ✓</div>
+<script>const raw=__RAW_JS__;function toast(t,icon){const e=document.getElementById('toast');e.innerHTML=(icon||'✓')+' '+t;e.classList.add('show');setTimeout(()=>e.classList.remove('show'),1700)}async function copyText(v){try{await navigator.clipboard.writeText(v);toast('کپی شد')}catch(e){const x=document.createElement('textarea');x.value=v;document.body.appendChild(x);x.select();document.execCommand('copy');x.remove();toast('کپی شد')}}function copyFact(el){const b=el.querySelector('b');if(b)copyText(b.textContent.trim())}async function shareLink(){if(navigator.share){try{await navigator.share({title:'VodiWalker Subscription',text:'اشتراک اختصاصی من',url:raw})}catch(e){}}else{copyText(raw)}}function downloadSub(){location.href=raw}function fmt(n){if(!n)return'0 B';const u=['B','KB','MB','GB','TB'];let i=0,x=Number(n)||0;while(x>=1024&&i<u.length-1){x/=1024;i++}return(x>=100?Math.round(x):x>=10?x.toFixed(1):x.toFixed(2))+' '+u[i]}function pctCls(p){return p>=90?'crit':(p>=70?'warn':'')}
+const RING_CIRC=263.89;
+async function refresh(){try{const r=await fetch('/api/subscription/__UUID__',{cache:'no-store'});if(!r.ok)return;const d=await r.json();const lim=Number(d.traffic_limit||0),used=Number(d.traffic_used||0),p=lim?Math.min(100,Math.round(used/lim*100)):0,cls=pctCls(p);document.getElementById('traffic').textContent=lim?fmt(used)+' / '+fmt(lim):fmt(used)+' / نامحدود';document.getElementById('remaining').textContent=lim?fmt(Math.max(0,lim-used)):'نامحدود';const pr=document.getElementById('progress');pr.style.width=p+'%';pr.className=cls;const rb=document.getElementById('ringBox');if(rb)rb.className='ring '+cls;const rBar=document.getElementById('ringBar');if(rBar)rBar.style.strokeDashoffset=(RING_CIRC*(1-p/100)).toFixed(2);document.getElementById('pct').textContent=p+'%';document.getElementById('liveState').textContent=d.active?'فعال':'غیرفعال';document.getElementById('status').textContent=d.active?'فعال':'غیرفعال';document.getElementById('updated').textContent='بروزرسانی '+new Date().toLocaleTimeString('fa-IR',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}catch(e){}}refresh();setInterval(()=>{if(!document.hidden)refresh()},15000)</script></body></html>"""
+    plan_chip = f'<span class="chip">پلن <b>{safe["plan"]}</b></span>' if safe["plan"] else ""
+    replacements={"__LABEL__":safe["label"],"__STATUS__":safe["status"],"__PROTOCOL__":safe["protocol"],"__IP__":safe["ip"],"__CONN__":safe["conn"],"__UUID_SHORT__":escape_html(uuid[:18])+"…","__INFO__":safe["info"],"__RAW__":safe["raw"],"__RAW_JS__":repr(raw_url),"__QR__":qr,"__PCT__":safe["pct"],"__PCTCLASS__":safe["pctclass"],"__RINGOFFSET__":safe["ringoffset"],"__USED__":safe["used"],"__LIMIT__":safe["limit"],"__REMAINING__":safe["remaining"],"__EXPIRES__":safe["expires"],"__UUID__":escape_html(uuid),"__NETWORK__":escape_html(str(link.get("network") or "tcp")),"__SECURITY__":escape_html(str(link.get("security") or "none")),"__ADDRESS__":escape_html(str(link.get("address") or host)),"__DAYS__":safe["days"],"__DAYSCLASS__":safe["daysclass"],"__SUPPORT__":safe["support"],"__PLAN_CHIP__":plan_chip}
     for k,v in replacements.items(): html=html.replace(k,v)
     return HTMLResponse(html)
+
+
+@app.get("/subscription/{uuid}", response_class=HTMLResponse)
+async def subscription_portal(uuid: str, request: Request):
+    return await render_subscription_portal(uuid, request)
+
+
+@app.get("/api/subscription/{uuid}")
+async def subscription_api(uuid: str):
+    async with LINKS_LOCK:
+        link = LINKS.get(uuid)
+    if not is_link_allowed(link):
+        raise HTTPException(status_code=404, detail="not found")
+    used = int(link.get("used_bytes", 0) or 0)
+    limit = int(link.get("limit_bytes", 0) or 0)
+    return {
+        "service": APP_NAME, "uuid": uuid, "label": link.get("label"),
+        "active": bool(link.get("active", True)), "protocol": link.get("protocol"),
+        "traffic_used": used, "traffic_limit": limit,
+        "traffic_remaining": max(0, limit-used) if limit else None,
+        "expires_at": link.get("expires_at"), "ip_limit": int(link.get("ip_limit", 0) or 0),
+        "config_count": max(1, min(40, int(link.get("config_count") or 1))),
+        "subscription": f"/sub/{uuid}", "portal": f"/subscription/{uuid}",
+    }
+
+# ============================================================
+# SUB ALL
+# ============================================================
 
 @app.get("/sub-all")
 async def subscription_all(
@@ -5109,102 +4731,17 @@ async def subscription_all(
     response_class=HTMLResponse,
 )
 async def info_page(uid: str, request: Request):
-    """Premium client portal. Keeps the stable /info/{uid} route but replaces the legacy card layout."""
+    """صفحه‌ی اطلاعات تک‌کانفیگ. برای این‌که فقط یک نسخه‌ی حرفه‌ای و به‌روز
+    نگه‌داری شود (به‌جای دو قالب متفاوت که به مرور از هم عقب می‌افتند)، این
+    مسیر از همان پرتال کامل /subscription/{uuid} استفاده می‌کند."""
     async with LINKS_LOCK:
-        link = LINKS.get(uid)
-        if not link:
-            return HTMLResponse("<html lang=\"fa\" dir=\"rtl\"><body style=\"margin:0;background:#070a10;color:#fff;font-family:sans-serif;padding:40px\"><h2>سرویس پیدا نشد</h2></body></html>", status_code=404)
-        snapshot = dict(link)
-
-    host = get_host(request)
-    vless_url = vless_link_for_link(snapshot, uid, host)
-    sub_url = f"{get_scheme()}://{host}/sub/{uid}"
-    label = str(snapshot.get("label") or "VodiWalker")
-    protocol = protocol_display_label(snapshot)
-    used = int(snapshot.get("used_bytes", 0) or 0)
-    limit = int(snapshot.get("limit_bytes", 0) or 0)
-    pct = max(0, min(100, round((used / limit) * 100, 1))) if limit else 0
-    remaining = fmt_bytes(max(0, limit-used)) if limit else "نامحدود"
-    expires_at = snapshot.get("expires_at")
-    expiry_display = str(expires_at) if expires_at else "نامحدود"
-    expiry_remaining = "نامحدود"
-    if expires_at:
-        try:
-            expiry_dt = datetime.fromisoformat(str(expires_at))
-            now_dt = datetime.now(expiry_dt.tzinfo) if expiry_dt.tzinfo else datetime.now()
-            seconds = int((expiry_dt - now_dt).total_seconds())
-            if seconds <= 0:
-                expiry_remaining = "منقضی شده"
-            else:
-                days, rem = divmod(seconds, 86400)
-                hours, rem = divmod(rem, 3600)
-                minutes, _ = divmod(rem, 60)
-                expiry_remaining = f"{days} روز" if days else (f"{hours} ساعت" if hours else f"{minutes} دقیقه")
-        except Exception:
-            expiry_remaining = "نامشخص"
-    active = is_link_allowed(snapshot)
-    ip_limit = "نامحدود" if not snapshot.get("ip_limit", 0) else str(snapshot.get("ip_limit"))
-    conn_limit = "نامحدود" if not snapshot.get("connection_limit", 0) else str(snapshot.get("connection_limit"))
-    speed_limit = "نامحدود" if not snapshot.get("speed_limit_bytes", 0) else fmt_bytes(snapshot.get("speed_limit_bytes", 0)) + "/s"
-    ips = len(unique_ips_for_uuid(uid))
-
-    esc = lambda x: escape_html(str(x))
-    label_e = esc(label); protocol_e = esc(protocol); uid_e = esc(uid)
-    sub_e = esc(sub_url); vless_e = esc(vless_url); expiry_e = esc(expiry_display)
-    rem_e = esc(remaining); speed_e = esc(speed_limit); ip_e = esc(ip_limit); conn_e = esc(conn_limit)
-    used_e = esc(fmt_bytes(used)); limit_e = esc(fmt_bytes(limit) if limit else "نامحدود")
-    status_e = "فعال" if active else "غیرفعال"
-    raw_js = json.dumps(raw_url if 'raw_url' in locals() else sub_url)
-    vless_js = json.dumps(vless_url)
-    sub_js = json.dumps(sub_url)
-
-    html = """<!doctype html>
-<html lang="fa" dir="rtl">
-<head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#070a12"><meta name="color-scheme" content="dark"><title>__LABEL__ · VodiWalker</title>
-<link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700;800;900&family=Inter:wght@400;600;700;800;900&display=swap" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
-<style>
-:root{--bg:#060812;--panel:#0d1220;--panel2:#111827;--line:rgba(255,255,255,.08);--muted:#8b97ad;--text:#f5f7fb;--accent:#7c5cff;--cyan:#3dd8ff;--good:#2dd4a0;--warn:#f5b942;--danger:#ff6175}
-*{box-sizing:border-box}html,body{margin:0;min-height:100%;font-family:Vazirmatn,Inter,sans-serif;background:var(--bg);color:var(--text)}body{overflow-x:hidden;background:radial-gradient(900px 420px at 85% -10%,rgba(124,92,255,.18),transparent 60%),radial-gradient(700px 380px at 5% 25%,rgba(61,216,255,.08),transparent 62%),linear-gradient(180deg,#070a12,#05070d)}
-body:before{content:"";position:fixed;inset:0;pointer-events:none;opacity:.28;background-image:linear-gradient(rgba(255,255,255,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.025) 1px,transparent 1px);background-size:48px 48px;mask-image:linear-gradient(#000,transparent 90%)}
-.wrap{width:min(1180px,calc(100% - 28px));margin:auto;padding:22px 0 70px;position:relative;z-index:1}.top{display:flex;justify-content:space-between;align-items:center;gap:14px;margin-bottom:14px}.brand{display:flex;align-items:center;gap:11px}.mark{width:42px;height:42px;border-radius:14px;display:grid;place-items:center;background:linear-gradient(145deg,#1b1730,#111c2c);border:1px solid rgba(124,92,255,.35);box-shadow:0 10px 35px rgba(0,0,0,.3);font-size:18px}.brand b{display:block;font-size:15px}.brand small{display:block;color:#66738a;font-size:9px;letter-spacing:.14em;margin-top:3px}.top-actions{display:flex;gap:8px;flex-wrap:wrap}.btn{border:1px solid var(--line);background:rgba(255,255,255,.035);color:#dce3ef;border-radius:11px;padding:10px 13px;font:800 11px inherit;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;gap:7px}.btn.primary{border-color:rgba(124,92,255,.45);background:linear-gradient(135deg,#7c5cff,#5d72ff);color:#fff;box-shadow:0 12px 32px rgba(92,91,255,.2)}.btn.good{color:#7bf0c6;border-color:rgba(45,212,160,.25);background:rgba(45,212,160,.07)}
-.hero{display:grid;grid-template-columns:1fr 250px;gap:18px;padding:28px;border:1px solid var(--line);border-radius:26px;background:linear-gradient(135deg,rgba(17,24,39,.92),rgba(8,12,21,.88));box-shadow:0 30px 100px rgba(0,0,0,.25);overflow:hidden;position:relative}.hero:after{content:"";position:absolute;width:360px;height:360px;left:-140px;top:-220px;border-radius:50%;background:radial-gradient(circle,rgba(124,92,255,.22),transparent 68%)}.hero-main{position:relative;z-index:1}.eyebrow{font-size:9px;letter-spacing:.18em;color:#8290a8;font-weight:900;text-transform:uppercase}.hero h1{font-size:clamp(28px,5vw,50px);line-height:1.08;letter-spacing:-.045em;margin:10px 0 8px}.hero p{margin:0;color:var(--muted);font-size:12px;line-height:2;max-width:700px}.chips{display:flex;flex-wrap:wrap;gap:7px;margin-top:15px}.chip{border:1px solid var(--line);background:rgba(255,255,255,.035);padding:7px 9px;border-radius:10px;color:#b9c4d5;font-size:9.5px}.chip b{color:#fff}.hero-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:17px}.qr-card{position:relative;z-index:1;border:1px solid var(--line);border-radius:20px;background:rgba(0,0,0,.18);padding:14px;text-align:center}.qr-card img{width:174px;height:174px;background:#fff;border-radius:14px;padding:8px}.qr-card small{display:block;color:#69768c;font-size:9px;margin-top:8px}
-.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:12px 0}.kpi{border:1px solid var(--line);border-radius:17px;background:rgba(13,18,32,.82);padding:16px}.kpi .cap{font-size:9px;color:#6e7b90}.kpi .num{font-size:19px;font-weight:900;margin-top:6px}.kpi.good .num{color:#5ee7ba}.kpi.warn .num{color:#ffd067}.kpi.blue .num{color:#72cfff}.kpi.purple .num{color:#b8a7ff}
-.grid{display:grid;grid-template-columns:1.35fr .65fr;gap:12px}.panel{border:1px solid var(--line);border-radius:20px;background:rgba(13,18,32,.84);overflow:hidden}.head{padding:16px 18px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;gap:10px}.head b{font-size:12px}.head small{display:block;color:#6e7b90;font-size:9px;margin-top:3px}.body{padding:18px}.usage-top{display:flex;align-items:center;gap:18px}.ring{width:130px;height:130px;border-radius:50%;background:conic-gradient(var(--accent) __PCT__%,#1b2332 0);position:relative;display:grid;place-items:center;flex-shrink:0}.ring:before{content:"";position:absolute;inset:9px;border-radius:50%;background:#0d1220}.ring>div{position:relative;text-align:center}.ring strong{font-size:22px}.ring small{display:block;color:#6d7890;font-size:8px;margin-top:2px}.usage-val{font-size:26px;font-weight:950;letter-spacing:-.04em}.usage-val span{font-size:11px;color:#69768c;font-weight:600}.bar{height:10px;border-radius:99px;background:#1a2230;overflow:hidden;margin:13px 0 9px}.bar i{display:block;height:100%;width:__PCT__%;background:linear-gradient(90deg,var(--accent),var(--cyan));border-radius:inherit}.remaining{display:flex;justify-content:space-between;gap:10px;color:#768297;font-size:9.5px;flex-wrap:wrap}.trend{margin-top:15px;border:1px solid var(--line);background:rgba(0,0,0,.12);border-radius:14px;padding:10px}.trend svg{width:100%;height:80px}.facts{display:grid;grid-template-columns:1fr 1fr;gap:9px}.fact{padding:13px;border:1px solid var(--line);border-radius:14px;background:rgba(255,255,255,.018)}.fact small{display:block;color:#6d7890;font-size:8.5px}.fact b{display:block;margin-top:6px;font-size:11px;word-break:break-word}.linkbox{margin-top:12px;padding:13px;border:1px solid var(--line);border-radius:14px;background:#080c15;direction:ltr;text-align:left;color:#b8c7ff;font:10px/1.8 ui-monospace,SFMono-Regular,Consolas,monospace;word-break:break-all}.actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:9px}.wide{grid-column:1/-1}.tech{display:grid;grid-template-columns:repeat(4,1fr);gap:9px}.tech .fact{min-height:76px}.apps{display:grid;grid-template-columns:repeat(3,1fr);gap:9px}.app{padding:13px;border:1px solid var(--line);border-radius:14px;background:rgba(255,255,255,.018);text-decoration:none}.app b{font-size:11px}.app small{display:block;color:#6d7890;font-size:8.5px;margin-top:4px}.footer{text-align:center;color:#566174;font-size:9px;padding:22px 0}.toast{position:fixed;bottom:22px;left:50%;transform:translate(-50%,18px);opacity:0;pointer-events:none;background:#111827;border:1px solid var(--line);border-radius:12px;padding:10px 14px;font-size:10px;transition:.2s;z-index:20}.toast.show{opacity:1;transform:translate(-50%,0)}
-@media(max-width:900px){.hero{grid-template-columns:1fr}.qr-card{max-width:240px}.grid{grid-template-columns:1fr}.kpis{grid-template-columns:repeat(2,1fr)}.tech{grid-template-columns:repeat(2,1fr)}}@media(max-width:540px){.wrap{width:calc(100% - 18px);padding-top:12px}.hero{padding:20px;border-radius:21px}.kpis{grid-template-columns:1fr 1fr}.usage-top{align-items:flex-start}.ring{width:100px;height:100px}.usage-val{font-size:21px}.facts{grid-template-columns:1fr}.tech,.apps{grid-template-columns:1fr}.actions{grid-template-columns:1fr}.top{align-items:flex-start}.top-actions{justify-content:flex-end}.hero h1{font-size:32px}}
-</style></head><body>
-<main class="wrap">
-<div class="top"><div class="brand"><div class="mark">✦</div><div><b>VodiWalker</b><small>SECURE CLIENT PORTAL</small></div></div><div class="top-actions"><button class="btn" onclick="toggleTheme()">◐ پوسته</button><button class="btn" onclick="openQr()">▦ QR</button><span class="btn good">● __STATUS__</span></div></div>
-<section class="hero"><div class="hero-main"><div class="eyebrow">Private Access Workspace</div><h1>__LABEL__</h1><p>مرکز حرفه‌ای مدیریت دسترسی شما؛ وضعیت مصرف، اعتبار سرویس، لینک اشتراک و مشخصات اتصال در یک فضای سریع و تمیز.</p><div class="chips"><span class="chip">پروتکل <b>__PROTOCOL__</b></span><span class="chip">شناسه <b>__UID_SHORT__</b></span><span class="chip">انقضا <b>__EXPIRY__</b></span></div><div class="hero-actions"><button class="btn primary" onclick="copy(SUB)">کپی Subscription</button><button class="btn" onclick="copy(VLESS)">کپی کانفیگ</button><a class="btn" href="__SUB_URL__">دریافت Subscription</a></div></div><div class="qr-card"><img id="qrImg" alt="QR"><small>اسکن برای اتصال سریع</small></div></section>
-<section class="kpis"><div class="kpi good"><div class="cap">مصرف‌شده</div><div class="num">__USED__</div></div><div class="kpi warn"><div class="cap">باقی‌مانده</div><div class="num">__REMAINING__</div></div><div class="kpi blue"><div class="cap">IP فعال</div><div class="num">__IPS__</div></div><div class="kpi purple"><div class="cap">زمان باقی‌مانده</div><div class="num">__EXPIRY_REMAINING__</div></div></section>
-<section class="grid"><div class="panel"><div class="head"><div><b>مصرف و سلامت سرویس</b><small>Real-time service overview</small></div><span style="color:#68e6b7;font-size:9px">● LIVE</span></div><div class="body"><div class="usage-top"><div class="ring"><div><strong>__PCT__%</strong><small>مصرف</small></div></div><div style="flex:1;min-width:0"><div class="usage-val">__USED__ <span>/ __LIMIT__</span></div><div class="bar"><i></i></div><div class="remaining"><span>باقی‌مانده: <b style="color:#dce3ef">__REMAINING__</b></span><span>انقضا: <b style="color:#dce3ef">__EXPIRY__</b></span></div></div></div><div class="trend"><small style="color:#6d7890;font-size:8.5px">روند مصرف</small><svg viewBox="0 0 700 90" preserveAspectRatio="none"><polyline points="0,78 80,68 150,72 230,48 310,55 390,34 470,43 550,24 700,18" fill="none" stroke="#6f83ff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/><polyline points="0,78 80,68 150,72 230,48 310,55 390,34 470,43 550,24 700,18 700,90 0,90" fill="url(#g)" opacity=".22"/><defs><linearGradient id="g" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#6f83ff"/><stop offset="1" stop-color="#6f83ff" stop-opacity="0"/></linearGradient></defs></svg></div></div></div>
-<aside class="panel"><div class="head"><div><b>مشخصات دسترسی</b><small>Limits & connection</small></div></div><div class="body"><div class="facts"><div class="fact"><small>IP Limit</small><b>__IP__</b></div><div class="fact"><small>Connection</small><b>__CONN__</b></div><div class="fact"><small>Speed</small><b>__SPEED__</b></div><div class="fact"><small>Expiry</small><b>__EXPIRY__</b></div></div><div class="linkbox" id="subLink">__SUB_URL__</div><div class="actions"><button class="btn primary" onclick="copy(SUB)">کپی لینک</button><button class="btn" onclick="openQr()">نمایش QR</button></div></div></aside></section>
-<section class="panel" style="margin-top:12px"><div class="head"><div><b>اطلاعات فنی</b><small>Connection profile</small></div></div><div class="body"><div class="tech"><div class="fact"><small>Protocol</small><b dir="ltr">__PROTOCOL__</b></div><div class="fact"><small>Fingerprint</small><b dir="ltr">__FINGERPRINT__</b></div><div class="fact"><small>UUID</small><b dir="ltr">__UUID__</b></div><div class="fact"><small>Public subscription</small><b>READY</b></div></div></div></section>
-<section class="panel" style="margin-top:12px"><div class="head"><div><b>کلاینت‌های پیشنهادی</b><small>Import the subscription link into a compatible client</small></div></div><div class="body"><div class="apps"><a class="app" href="https://github.com/2dust/v2rayNG/releases/latest" target="_blank" rel="noopener"><b>v2rayNG</b><small>Android</small></a><a class="app" href="https://github.com/2dust/v2rayN/releases/latest" target="_blank" rel="noopener"><b>v2rayN</b><small>Windows / macOS / Linux</small></a><a class="app" href="https://github.com/hiddify/hiddify-app/releases/latest" target="_blank" rel="noopener"><b>Hiddify</b><small>Android / Desktop</small></a></div></div></section>
-<div class="footer">VodiWalker Secure Client Portal · اطلاعات اتصال فقط برای صاحب این لینک</div>
-</main><div id="toast" class="toast"></div>
-<div id="qrModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.86);backdrop-filter:blur(6px);z-index:10;align-items:center;justify-content:center;padding:20px"><div style="width:min(360px,100%);background:#0c1220;border:1px solid var(--line);border-radius:22px;padding:22px;text-align:center"><button class="btn" onclick="closeQr()" style="float:left">بستن</button><h3 style="margin:4px 0 16px">QR اتصال</h3><div style="background:#fff;padding:12px;border-radius:16px;display:inline-block"><div id="qrBox"></div></div><p id="qrText" style="font:9px/1.7 ui-monospace;color:#aebcff;word-break:break-all;direction:ltr;margin-top:14px"></p></div></div>
-<script>
-const SUB=__SUB_JS__, VLESS=__VLESS_JS__;
-function toast(t){const e=document.getElementById('toast');e.textContent=t;e.classList.add('show');setTimeout(()=>e.classList.remove('show'),1600)}
-async function copy(v){try{await navigator.clipboard.writeText(v);toast('کپی شد ✓')}catch(e){const x=document.createElement('textarea');x.value=v;document.body.appendChild(x);x.select();document.execCommand('copy');x.remove();toast('کپی شد ✓')}}
-function toggleTheme(){document.body.classList.toggle('light');localStorage.setItem('vw_portal_theme',document.body.classList.contains('light')?'light':'dark')}
-(function(){if(localStorage.getItem('vw_portal_theme')==='light'){document.body.classList.add('light');document.documentElement.style.setProperty('--bg','#eef1f7');document.documentElement.style.setProperty('--panel','#fff');document.documentElement.style.setProperty('--panel2','#f5f7fb');document.documentElement.style.setProperty('--text','#151827');document.documentElement.style.setProperty('--muted','#667085')}})();
-function qrFor(v){try{const q=qrcode(0,'M');q.addData(v);q.make();document.getElementById('qrImg').src='data:image/svg+xml;charset=utf-8,'+encodeURIComponent(q.createSvgTag(4,4));document.getElementById('qrBox').innerHTML=q.createSvgTag(5,4);document.getElementById('qrText').textContent=v}catch(e){}}
-function openQr(){document.getElementById('qrModal').style.display='flex'}function closeQr(){document.getElementById('qrModal').style.display='none'}qrFor(VLESS);
-</script></body></html>"""
-    repl = {
-        "__LABEL__": label_e, "__PROTOCOL__": protocol_e, "__UID_SHORT__": esc(uid[:18]+'…'),
-        "__EXPIRY__": expiry_e, "__STATUS__": status_e, "__USED__": used_e, "__REMAINING__": rem_e,
-        "__IPS__": str(ips), "__EXPIRY_REMAINING__": esc(expiry_remaining), "__LIMIT__": limit_e,
-        "__IP__": ip_e, "__CONN__": conn_e, "__SPEED__": speed_e, "__FINGERPRINT__": esc(snapshot.get("fingerprint", "chrome")),
-        "__UUID__": uid_e, "__SUB_URL__": sub_e, "__VLESS_URL__": vless_e, "__PCT__": str(pct),
-        "__SUB_JS__": sub_js, "__VLESS_JS__": vless_js,
-    }
-    for k,v in repl.items(): html = html.replace(k,v)
-    return HTMLResponse(html)
+        exists = uid in LINKS
+    if not exists:
+        return HTMLResponse(
+            "<html lang=\"fa\" dir=\"rtl\"><body style=\"margin:0;background:#070a10;color:#fff;font-family:sans-serif;padding:40px\"><h2>سرویس پیدا نشد</h2></body></html>",
+            status_code=404,
+        )
+    return await render_subscription_portal(uid, request)
 
 # ============================================================
 # SUB GROUP API
@@ -5547,10 +5084,7 @@ async def sub_group_subscription(
             )
         )
 
-        if (
-            hash_password(password)
-            != sub["password_hash"]
-        ):
+        if not verify_password(password, sub["password_hash"]):
 
             raise HTTPException(
                 status_code=403,
@@ -5572,20 +5106,21 @@ async def sub_group_subscription(
                 link_id
             )
 
-            if (
-                link
-                and is_link_allowed(
-                    link
-                )
-            ):
+            if not link:
+                continue
 
-                lines.append(
-                    vless_link_for_link(
-                        link,
-                        link_id,
-                        host,
-                    )
+            # رفع باگ: قبلاً لینک‌های منقضی/غیرفعال/تمام‌شده کاملاً از سابسکریپشن
+            # حذف می‌شدند و کاربر بدون هیچ توضیحی می‌دید که کانفیگ وصل نمی‌شود.
+            # حالا کانفیگ در لیست باقی می‌ماند ولی با ریمارک هشدار مشخص می‌شود؛
+            # اتصال واقعی همچنان توسط is_link_allowed در لایه‌ی relay رد می‌شود.
+            label = remark_with_status(str(link.get("label") or "Config"), link)
+            lines.append(
+                vless_link_for_link(
+                    {**link, "label": label},
+                    link_id,
+                    host,
                 )
+            )
 
     content = (
         base64
@@ -5661,7 +5196,7 @@ PUBLIC_SUB_HTML = r"""
 :root{--bg:#070a10;--panel:#0d121b;--panel2:#111823;--line:rgba(255,255,255,.08);--text:#f5f7fb;--muted:#8e9aae;--soft:#647086;--accent:#7c5cff;--cyan:#39d6ff;--green:#36d399;--red:#ff7088}*{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at 10% 0%,rgba(124,92,255,.18),transparent 28%),radial-gradient(circle at 92% 8%,rgba(57,214,255,.09),transparent 25%),#070a10;color:var(--text);font-family:Inter,Tahoma,Arial,sans-serif}.wrap{width:min(1120px,calc(100% - 28px));margin:auto;padding:25px 0 70px}.top{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:16px}.brand{display:flex;align-items:center;gap:10px;font-weight:900}.mark{width:40px;height:40px;border-radius:13px;display:grid;place-items:center;background:linear-gradient(145deg,#17132a,#111b2a);border:1px solid rgba(124,92,255,.35);box-shadow:inset 0 0 25px rgba(124,92,255,.09)}.brand small{display:block;color:var(--soft);font-size:9px;margin-top:3px}.badge{padding:8px 12px;border-radius:999px;border:1px solid rgba(54,211,153,.22);background:rgba(54,211,153,.07);color:#7ceabf;font-size:10px;font-weight:800}.hero{border:1px solid var(--line);border-radius:28px;padding:27px;background:linear-gradient(135deg,rgba(17,24,35,.94),rgba(9,13,20,.9));box-shadow:0 30px 100px rgba(0,0,0,.24);margin-bottom:14px}.eyebrow{font-size:9px;color:#8995aa;letter-spacing:.15em;text-transform:uppercase;font-weight:900}.hero h1{font-size:clamp(28px,5vw,46px);margin:8px 0}.hero p{color:var(--muted);font-size:12px;line-height:2;margin:0;max-width:760px}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin-top:20px}.stat{padding:14px;border:1px solid var(--line);background:rgba(255,255,255,.018);border-radius:16px}.stat label{display:block;color:var(--soft);font-size:9px;margin-bottom:7px}.stat b{font-size:18px}.layout{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(300px,.6fr);gap:14px}.panel{border:1px solid var(--line);background:rgba(13,18,27,.84);border-radius:23px;overflow:hidden;box-shadow:0 20px 65px rgba(0,0,0,.17)}.head{padding:16px 18px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center}.head b{font-size:12px}.head small{display:block;color:var(--soft);font-size:9px;margin-top:4px}.body{padding:17px}.url{padding:13px;border-radius:14px;background:#090d15;border:1px solid var(--line);direction:ltr;text-align:left;word-break:break-all;color:#b9c7ff;font:10px/1.7 ui-monospace,SFMono-Regular,Consolas,monospace}.actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:9px}.btn{border:0;cursor:pointer;text-decoration:none;color:#fff;background:linear-gradient(135deg,#7c5cff,#4d7cff);padding:11px 13px;border-radius:12px;font-size:10px;font-weight:850;text-align:center}.btn.alt{background:#121925;border:1px solid var(--line);color:#dce2eb}.full{grid-column:1/-1}.link{padding:14px;border:1px solid var(--line);border-radius:16px;background:rgba(255,255,255,.015);margin-bottom:9px}.link:last-child{margin-bottom:0}.linktop{display:flex;justify-content:space-between;gap:12px;align-items:center}.linkname{font-weight:850;font-size:12px}.proto{color:#a998ff;font-size:9px;margin-top:4px}.online{padding:5px 8px;border-radius:999px;font-size:8px;background:rgba(54,211,153,.08);color:#79e9bc;border:1px solid rgba(54,211,153,.18)}.offline{background:rgba(255,112,136,.08);color:#ff9aae;border-color:rgba(255,112,136,.18)}.linkmeta{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-top:12px}.mini{padding:9px;border-radius:11px;background:#0b1018;border:1px solid rgba(255,255,255,.05)}.mini small{display:block;color:var(--soft);font-size:8px}.mini b{display:block;margin-top:4px;font-size:10px}.qr{text-align:center}.qr img{width:190px;height:190px;background:#fff;padding:9px;border-radius:17px}.notice{margin-top:12px;padding:12px;border-radius:13px;background:rgba(57,214,255,.045);border:1px solid rgba(57,214,255,.11);color:#9eb3c9;font-size:9px;line-height:1.9}.footer{text-align:center;color:#566174;font-size:9px;padding-top:22px}.locked{max-width:500px;margin:14vh auto}.field{display:flex;gap:8px}.field input{flex:1;background:#0a0f17;border:1px solid var(--line);color:#fff;padding:12px;border-radius:12px;direction:ltr}.toast{position:fixed;left:50%;bottom:22px;transform:translate(-50%,20px);opacity:0;background:#121925;border:1px solid var(--line);padding:10px 14px;border-radius:12px;font-size:10px;transition:.2s}.toast.show{opacity:1;transform:translate(-50%,0)}@media(max-width:800px){.layout{grid-template-columns:1fr}.stats{grid-template-columns:1fr 1fr 1fr}}@media(max-width:520px){.wrap{width:calc(100% - 18px);padding-top:12px}.hero{padding:20px}.stats{grid-template-columns:1fr 1fr}.linkmeta{grid-template-columns:1fr 1fr}.actions{grid-template-columns:1fr}}
 </style></head><body><main class="wrap"><div class="top"><div class="brand"><div class="mark">✦</div><div>VodiWalker<small>GROUP SUBSCRIPTION</small></div></div><div class="badge">● آماده استفاده</div></div><div id="app"></div><div class="footer">VodiWalker · Secure subscription delivery</div></main><div class="toast" id="toast">کپی شد</div>
 <script>
-const key=location.pathname.split('/').pop();const qs=location.search||'';function esc(s){return String(s??'').replace(/[&<>'"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[m]))}function toast(t){const e=document.getElementById('toast');e.textContent=t;e.classList.add('show');setTimeout(()=>e.classList.remove('show'),1600)}async function copy(v){try{await navigator.clipboard.writeText(v);toast('لینک کپی شد ✓')}catch(e){prompt('کپی کنید:',v)}}function fmt(n){if(!n)return'0 B';const u=['B','KB','MB','GB','TB'];let i=0,x=Number(n)||0;while(x>=1024&&i<u.length-1){x/=1024;i++}return(x>=100?Math.round(x):x>=10?x.toFixed(1):x.toFixed(2))+' '+u[i]}function render(d){if(d.locked){document.getElementById('app').innerHTML='<section class="panel locked"><div class="body"><div class="eyebrow">Protected subscription</div><h2>'+esc(d.name||'اشتراک')+'</h2><p style="color:var(--muted);font-size:11px;line-height:2">این اشتراک با رمز محافظت می‌شود. رمز را وارد کنید تا اطلاعات و لینک‌ها نمایش داده شوند.</p><form class="field" onsubmit="event.preventDefault();location.search='?pw='+encodeURIComponent(document.getElementById(\'pw\').value)"><input id="pw" type="password" placeholder="Subscription password"><button class="btn">ورود</button></form></div></section>';return}const links=d.links||[];const qr='https://api.qrserver.com/v1/create-qr-code/?size=220x220&data='+encodeURIComponent(d.sub_url||'');document.getElementById('app').innerHTML='<section class="hero"><div class="eyebrow">Subscription center</div><h1>'+esc(d.name||'Subscription')+'</h1><p>'+esc(d.desc||'مدیریت متمرکز کانفیگ‌ها و لینک اشتراک در یک صفحه حرفه‌ای.')+'</p><div class="stats"><div class="stat"><label>کانفیگ فعال</label><b>'+links.filter(x=>x.active).length+'</b></div><div class="stat"><label>اتصال فعال</label><b>'+Number(d.active_connections||0)+'</b></div><div class="stat"><label>مصرف کل</label><b>'+esc(d.total_used_fmt||'0 B')+'</b></div></div></section><section class="layout"><div class="panel"><div class="head"><div><b>کانفیگ‌های این اشتراک</b><small>وضعیت هر مسیر و مصرف آن</small></div><span style="color:var(--soft);font-size:9px">'+links.length+' مورد</span></div><div class="body">'+(links.length?links.map(l=>'<article class="link"><div class="linktop"><div><div class="linkname">'+esc(l.label||'Config')+'</div><div class="proto">'+esc(l.protocol||'VLESS')+'</div></div><span class="online '+(l.active?'':'offline')+'">'+(l.active?'فعال':'غیرفعال')+'</span></div><div class="linkmeta"><div class="mini"><small>مصرف</small><b>'+esc(l.used_fmt||'0 B')+' / '+esc(l.limit_fmt||'∞')+'</b></div><div class="mini"><small>اتصال</small><b>'+Number(l.connections||0)+' / '+(Number(l.connection_limit||0)||'∞')+'</b></div><div class="mini"><small>انقضا</small><b>'+esc((l.expires_at||'نامحدود').toString().slice(0,16))+'</b></div></div><div class="actions"><button class="btn" onclick="copy('+esc(JSON.stringify(l.sub_url||''))+')">کپی ساب</button><a class="btn alt" href="'+esc(l.info_url||'#')+'">جزئیات</a></div></article>').join(''):'<div style="padding:35px;text-align:center;color:var(--soft);font-size:11px">کانفیگ فعالی برای این اشتراک وجود ندارد.</div>')+'</div></div><aside class="panel"><div class="head"><div><b>لینک اصلی اشتراک</b><small>مناسب برای کلاینت‌های سازگار</small></div></div><div class="body"><div class="qr"><img src="'+qr+'" alt="QR"></div><div class="url">'+esc(d.sub_url||'')+'</div><div class="actions"><button class="btn" onclick="copy('+esc(JSON.stringify(d.sub_url||''))+')">کپی لینک</button><a class="btn alt" href="'+esc(d.sub_url||'#')+'">دریافت</a></div><div class="notice">برای استفاده، لینک بالا را در بخش Subscription کلاینت خود وارد کنید. لینک خام و API بدون تغییر باقی می‌مانند تا سازگاری حفظ شود.</div></div></aside></section>'}async function load(){try{const r=await fetch('/api/public/sub/'+encodeURIComponent(key)+qs,{cache:'no-store'});const d=await r.json();if(!r.ok)throw Error(d.detail||'خطا');render(d)}catch(e){document.getElementById('app').innerHTML='<section class="panel"><div class="body"><h2>اشتراک پیدا نشد</h2><p style="color:var(--muted)">لینک اشتراک منقضی شده، حذف شده یا در دسترس نیست.</p></div></section>'}}load();
+const key=location.pathname.split('/').pop();const qs=location.search||'';function esc(s){return String(s??'').replace(/[&<>'"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[m]))}function toast(t){const e=document.getElementById('toast');e.textContent=t;e.classList.add('show');setTimeout(()=>e.classList.remove('show'),1600)}async function copy(v){try{await navigator.clipboard.writeText(v);toast('لینک کپی شد ✓')}catch(e){prompt('کپی کنید:',v)}}function fmt(n){if(!n)return'0 B';const u=['B','KB','MB','GB','TB'];let i=0,x=Number(n)||0;while(x>=1024&&i<u.length-1){x/=1024;i++}return(x>=100?Math.round(x):x>=10?x.toFixed(1):x.toFixed(2))+' '+u[i]}function render(d){if(d.locked){document.getElementById('app').innerHTML='<section class="panel locked"><div class="body"><div class="eyebrow">Protected subscription</div><h2>'+esc(d.name||'اشتراک')+'</h2><p style="color:var(--muted);font-size:11px;line-height:2">این اشتراک با رمز محافظت می‌شود. رمز را وارد کنید تا اطلاعات و لینک‌ها نمایش داده شوند.</p><form class="field" onsubmit="event.preventDefault();location.search=\'?pw=\'+encodeURIComponent(document.getElementById(\'pw\').value)"><input id="pw" type="password" placeholder="Subscription password"><button class="btn">ورود</button></form></div></section>';return}const links=d.links||[];const qr='https://api.qrserver.com/v1/create-qr-code/?size=220x220&data='+encodeURIComponent(d.sub_url||'');document.getElementById('app').innerHTML='<section class="hero"><div class="eyebrow">Subscription center</div><h1>'+esc(d.name||'Subscription')+'</h1><p>'+esc(d.desc||'مدیریت متمرکز کانفیگ‌ها و لینک اشتراک در یک صفحه حرفه‌ای.')+'</p><div class="stats"><div class="stat"><label>کانفیگ فعال</label><b>'+links.filter(x=>x.active).length+'</b></div><div class="stat"><label>اتصال فعال</label><b>'+Number(d.active_connections||0)+'</b></div><div class="stat"><label>مصرف کل</label><b>'+esc(d.total_used_fmt||'0 B')+'</b></div></div></section><section class="layout"><div class="panel"><div class="head"><div><b>کانفیگ‌های این اشتراک</b><small>وضعیت هر مسیر و مصرف آن</small></div><span style="color:var(--soft);font-size:9px">'+links.length+' مورد</span></div><div class="body">'+(links.length?links.map(l=>'<article class="link"><div class="linktop"><div><div class="linkname">'+esc(l.label||'Config')+'</div><div class="proto">'+esc(l.protocol||'VLESS')+'</div></div><span class="online '+(l.active?'':'offline')+'">'+(l.active?'فعال':(l.block_reason?('⚠️ '+l.block_reason):'غیرفعال'))+'</span></div><div class="linkmeta"><div class="mini"><small>مصرف</small><b>'+esc(l.used_fmt||'0 B')+' / '+esc(l.limit_fmt||'∞')+'</b></div><div class="mini"><small>اتصال</small><b>'+Number(l.connections||0)+' / '+(Number(l.connection_limit||0)||'∞')+'</b></div><div class="mini"><small>انقضا</small><b>'+esc((l.expires_at||'نامحدود').toString().slice(0,16))+'</b></div></div><div class="actions"><button class="btn" onclick="copy('+JSON.stringify(l.sub_url||'')+')">کپی ساب</button><a class="btn alt" href="'+esc(l.info_url||'#')+'">جزئیات</a></div></article>').join(''):'<div style="padding:35px;text-align:center;color:var(--soft);font-size:11px">کانفیگ فعالی برای این اشتراک وجود ندارد.</div>')+'</div></div><aside class="panel"><div class="head"><div><b>لینک اصلی اشتراک</b><small>مناسب برای کلاینت‌های سازگار</small></div></div><div class="body"><div class="qr"><img src="'+qr+'" alt="QR"></div><div class="url">'+esc(d.sub_url||'')+'</div><div class="actions"><button class="btn" onclick="copy('+JSON.stringify(d.sub_url||'')+')">کپی لینک</button><a class="btn alt" href="'+esc(d.sub_url||'#')+'">دریافت</a></div><div class="notice">برای استفاده، لینک بالا را در بخش Subscription کلاینت خود وارد کنید. لینک خام و API بدون تغییر باقی می‌مانند تا سازگاری حفظ شود.</div></div></aside></section>'}async function load(){try{const r=await fetch('/api/public/sub/'+encodeURIComponent(key)+qs,{cache:'no-store'});const d=await r.json();if(!r.ok)throw Error(d.detail||'خطا');render(d)}catch(e){document.getElementById('app').innerHTML='<section class="panel"><div class="body"><h2>اشتراک پیدا نشد</h2><p style="color:var(--muted)">لینک اشتراک منقضی شده، حذف شده یا در دسترس نیست.</p></div></section>'}}load();
 </script></body></html>
 """
 
@@ -5755,12 +5290,7 @@ async def public_sub_data(
             )
         )
 
-        if (
-            hash_password(password)
-            != sub[
-                "password_hash"
-            ]
-        ):
+        if not verify_password(password, sub["password_hash"]):
 
             return JSONResponse(
                 {
@@ -5777,8 +5307,7 @@ async def public_sub_data(
 
     links_out = []
 
-    active_ip_set = set()
-    active_session_count = 0
+    active_connections = 0
 
     for link_id in sub.get(
         "link_ids",
@@ -5796,14 +5325,15 @@ async def public_sub_data(
             link
         )
 
-        link_ips = {
-            str(item.get("ip") or "").strip()
+        connection_count = sum(
+            1
             for item in connections.values()
-            if item.get("uuid") == link_id and str(item.get("ip") or "").strip()
-        }
-        connection_count = len(link_ips)
-        active_session_count += sum(1 for item in connections.values() if item.get("uuid") == link_id)
-        active_ip_set.update(link_ips)
+            if item.get("uuid") == link_id
+        )
+
+        active_connections += (
+            connection_count
+        )
 
         links_out.append(
             {
@@ -5817,6 +5347,9 @@ async def public_sub_data(
 
                 "active":
                     allowed,
+
+                "block_reason":
+                    link_block_reason(link),
 
                 "protocol":
                     link.get(
@@ -5929,13 +5462,7 @@ async def public_sub_data(
             ),
 
         "active_connections":
-            len(active_ip_set),
-
-        "active_sessions":
-            active_session_count,
-
-        "active_ips":
-            sorted(active_ip_set),
+            active_connections,
 
         "total_used_fmt":
             fmt_bytes(
@@ -6718,9 +6245,6 @@ def _admin_public(admin_id: str, admin: dict) -> dict:
         "created_at": admin.get("created_at"),
         "last_login_at": admin.get("last_login_at"),
         "last_login_ip": admin.get("last_login_ip"),
-        "credit_stars": admin.get("credit_stars", 0),
-        "full_name": admin.get("full_name", ""),
-        "telegram_id": admin.get("telegram_id", ""),
     }
 
 
@@ -6860,201 +6384,6 @@ async def api_delete_admin(admin_id: str, token=Depends(require_owner)):
 
 
 # ============================================================
-# ADMIN REGISTRATION REQUESTS ("ثبت‌نام ادمینی" روی صفحه لاگین)
-# ============================================================
-
-def _admin_request_public(req_id: str, req: dict) -> dict:
-    return {
-        "id": req_id,
-        "full_name": req.get("full_name", ""),
-        "telegram_id": req.get("telegram_id", ""),
-        "note": req.get("note", ""),
-        "status": req.get("status", "pending"),
-        "created_at": req.get("created_at"),
-        "decided_at": req.get("decided_at"),
-        "admin_id": req.get("admin_id"),
-        "ip": req.get("ip"),
-    }
-
-
-@app.post("/api/admin-requests")
-async def api_submit_admin_request(request: Request):
-    """صفحه لاگین این را صدا می‌زند؛ نیازی به احراز هویت ندارد."""
-
-    ip = request.client.host if request.client else "unknown"
-
-    now = time.time()
-    last = ADMIN_REQUEST_RATE.get(ip, 0)
-    if now - last < ADMIN_REQUEST_COOLDOWN_SECONDS:
-        raise HTTPException(
-            status_code=429,
-            detail="کمی صبر کنید و دوباره تلاش کنید",
-        )
-
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="اطلاعات نامعتبر است")
-
-    full_name = str(body.get("full_name", "")).strip()
-    telegram_id = str(body.get("telegram_id", "")).strip().lstrip("@")
-    note = str(body.get("note", "")).strip()[:500]
-
-    if not full_name or len(full_name) < 3:
-        raise HTTPException(status_code=400, detail="نام و نام خانوادگی را کامل وارد کنید")
-    if not telegram_id or len(telegram_id) < 3:
-        raise HTTPException(status_code=400, detail="آیدی تلگرام معتبر وارد کنید")
-
-    ADMIN_REQUEST_RATE[ip] = now
-
-    async with ADMIN_REQUESTS_LOCK:
-        req_id = secrets.token_hex(6)
-        ADMIN_REQUESTS[req_id] = {
-            "full_name": full_name[:120],
-            "telegram_id": telegram_id[:120],
-            "note": note,
-            "status": "pending",
-            "created_at": datetime.now().isoformat(),
-            "decided_at": None,
-            "admin_id": None,
-            "ip": ip,
-        }
-
-    await save_state()
-
-    log_activity(
-        "auth",
-        f"درخواست ثبت‌نام ادمین جدید از «{full_name}» (@{telegram_id})",
-        "info",
-    )
-
-    return {"ok": True, "id": req_id}
-
-
-@app.get("/api/admin-requests")
-async def api_list_admin_requests(token=Depends(require_owner)):
-    pending = sum(1 for r in ADMIN_REQUESTS.values() if r.get("status") == "pending")
-    requests_list = sorted(
-        (_admin_request_public(rid, r) for rid, r in ADMIN_REQUESTS.items()),
-        key=lambda r: r.get("created_at") or "",
-        reverse=True,
-    )
-    return {"ok": True, "requests": requests_list, "pending": pending}
-
-
-@app.post("/api/admin-requests/{req_id}/approve")
-async def api_approve_admin_request(req_id: str, request: Request, token=Depends(require_owner)):
-    """مالک اینجا تصمیم می‌گیرد چه نام‌کاربری/رمز/دسترسی/شارژی به درخواست‌کننده بدهد
-    و همان لحظه حساب ادمین واقعی برایش ساخته می‌شود."""
-
-    req = ADMIN_REQUESTS.get(req_id)
-    if not req:
-        raise HTTPException(status_code=404, detail="درخواست یافت نشد")
-    if req.get("status") != "pending":
-        raise HTTPException(status_code=409, detail="این درخواست قبلاً بررسی شده است")
-
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="اطلاعات نامعتبر است")
-
-    username = str(body.get("username", "")).strip()
-    password = str(body.get("password", "")).strip()
-
-    if not username or username.lower() == "owner":
-        raise HTTPException(status_code=400, detail="نام کاربری نامعتبر است")
-    if len(password) < LOGIN_MIN_PASSWORD_LENGTH:
-        raise HTTPException(
-            status_code=400,
-            detail=f"رمز عبور باید حداقل {LOGIN_MIN_PASSWORD_LENGTH} کاراکتر باشد",
-        )
-    if username.lower() == AUTH.get("username", DEFAULT_ADMIN_USERNAME).lower():
-        raise HTTPException(status_code=409, detail="این نام کاربری قبلاً استفاده شده است")
-    for a in ADMINS.values():
-        if a.get("username", "").lower() == username.lower():
-            raise HTTPException(status_code=409, detail="این نام کاربری قبلاً استفاده شده است")
-
-    credit_stars = safe_int(body.get("credit_stars"), default=0, minimum=0)
-
-    admin_id = secrets.token_hex(6)
-    ADMINS[admin_id] = {
-        "username": username,
-        "password_hash": hash_password(password),
-        "role": "admin",
-        "permissions": list(body.get("permissions") or {"dashboard", "inbounds", "subscriptions"}),
-        "active": True,
-        "created_at": datetime.now().isoformat(),
-        "last_login_at": None,
-        "last_login_ip": None,
-        "credit_stars": credit_stars,
-        "full_name": req.get("full_name", ""),
-        "telegram_id": req.get("telegram_id", ""),
-    }
-
-    req["status"] = "approved"
-    req["decided_at"] = datetime.now().isoformat()
-    req["admin_id"] = admin_id
-
-    await save_state()
-
-    log_activity(
-        "auth",
-        f"درخواست «{req.get('full_name')}» تایید و حساب ادمین «{username}» ساخته شد",
-        "ok",
-    )
-
-    delivery_message = (
-        f"سلام {req.get('full_name','')} عزیز 👋\n\n"
-        f"حساب ادمین شما در VodiWalker فعال شد.\n\n"
-        f"نام کاربری: {username}\n"
-        f"رمز عبور: {password}\n\n"
-        f"از طریق صفحه ورود پنل وارد شوید و رمز خود را در اولین فرصت تغییر دهید."
-    )
-
-    return {
-        "ok": True,
-        "admin": _admin_public(admin_id, ADMINS[admin_id]),
-        "telegram_id": req.get("telegram_id", ""),
-        "delivery_message": delivery_message,
-    }
-
-
-@app.post("/api/admin-requests/{req_id}/reject")
-async def api_reject_admin_request(req_id: str, request: Request, token=Depends(require_owner)):
-    req = ADMIN_REQUESTS.get(req_id)
-    if not req:
-        raise HTTPException(status_code=404, detail="درخواست یافت نشد")
-    if req.get("status") != "pending":
-        raise HTTPException(status_code=409, detail="این درخواست قبلاً بررسی شده است")
-
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-
-    reason = str((body or {}).get("reason", "")).strip()[:300]
-
-    req["status"] = "rejected"
-    req["decided_at"] = datetime.now().isoformat()
-    req["note"] = reason or req.get("note", "")
-
-    await save_state()
-
-    log_activity("auth", f"درخواست ادمینی «{req.get('full_name')}» رد شد", "warn")
-
-    return {"ok": True}
-
-
-@app.delete("/api/admin-requests/{req_id}")
-async def api_delete_admin_request(req_id: str, token=Depends(require_owner)):
-    if req_id not in ADMIN_REQUESTS:
-        raise HTTPException(status_code=404, detail="درخواست یافت نشد")
-    ADMIN_REQUESTS.pop(req_id, None)
-    await save_state()
-    return {"ok": True}
-
-
-# ============================================================
 # BOT CONTROL CENTER
 @app.get("/api/bot/texts")
 async def api_bot_texts(token=Depends(require_owner)):
@@ -7076,7 +6405,7 @@ async def api_bot_texts_save(request: Request, token=Depends(require_owner)):
     log_activity("bot", "متن‌های ربات از پنل بروزرسانی شد", "ok")
     return {"ok": True, "texts": BOT_TEXTS}
 
-# PANEL SETTINGS (آدرس عمومی پنل + مدیریت ربات فروش از داخل پنل)
+# PANEL SETTINGS (آدرس عمومی پنل + مدیریت ربات از داخل پنل)
 # ============================================================
 
 @app.get("/api/settings")
@@ -7096,10 +6425,6 @@ async def api_get_settings(request: Request, token=Depends(require_owner)):
         "bot_running": bot_cfg.get("running", False),
         "bot_auto_start": bool(CONFIG.get("bot_auto_start", False)),
         "admin_username": AUTH.get("username", DEFAULT_ADMIN_USERNAME),
-        "sub_remark_show_name": bool(CONFIG.get("sub_remark_show_name", True)),
-        "sub_remark_show_volume": bool(CONFIG.get("sub_remark_show_volume", False)),
-        "sub_remark_show_id": bool(CONFIG.get("sub_remark_show_id", False)),
-        "sub_remark_show_inbound": bool(CONFIG.get("sub_remark_show_inbound", False)),
     }
 
 
@@ -7135,10 +6460,6 @@ async def api_update_settings(request: Request, token=Depends(require_owner)):
         if raw_port and not raw_port.isdigit():
             raise HTTPException(status_code=400, detail="پورت عمومی TCP باید عدد باشد")
         CONFIG["tcp_public_port"] = raw_port
-
-    for flag in ("sub_remark_show_name", "sub_remark_show_volume", "sub_remark_show_id", "sub_remark_show_inbound"):
-        if flag in body:
-            CONFIG[flag] = bool(body.get(flag))
 
     try:
         import telegram_bot
@@ -7197,109 +6518,6 @@ async def api_bot_stop(token=Depends(require_owner)):
 
 
 # ============================================================
-# PLAN MANAGEMENT (graphical, editable store plans)
-# ============================================================
-
-@app.get("/api/plans")
-async def api_list_plans(token=Depends(require_auth)):
-    import sales
-    return {"ok": True, "plans": sales.list_plans()}
-
-
-@app.post("/api/plans")
-async def api_create_plan(request: Request, token=Depends(require_auth)):
-    import sales
-
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="اطلاعات نامعتبر است")
-
-    name = str(body.get("name", "")).strip() or "پلن جدید"
-
-    raw_id = str(body.get("id") or name).strip().lower()
-    plan_id = "".join(ch if (ch.isalnum() or ch == "-") else "-" for ch in raw_id.replace(" ", "-")).strip("-")
-    plan_id = plan_id or f"plan-{secrets.token_hex(3)}"
-
-    if sales.get_plan(plan_id):
-        plan_id = f"{plan_id}-{secrets.token_hex(2)}"
-
-    data = {
-        "name": name,
-        "days": safe_int(body.get("days"), default=30, minimum=0),
-        "volume_gb": safe_float(body.get("volume_gb"), default=10, minimum=0),
-        "speed_mbps": safe_float(body.get("speed_mbps"), default=0, minimum=0),
-        "ip_limit": safe_int(body.get("ip_limit"), default=1, minimum=0),
-        "stars": safe_int(body.get("stars"), default=99, minimum=0),
-        "badge": str(body.get("badge", "")).strip(),
-        "featured": bool(body.get("featured", False)),
-        "order": safe_int(body.get("order"), default=len(sales.PLANS) + 1, minimum=0),
-    }
-
-    await sales.upsert_plan(plan_id, data)
-
-    log_activity("plan", f"پلن «{name}» ایجاد شد", "ok")
-
-    return {"ok": True, "plan": sales.get_plan(plan_id)}
-
-
-@app.patch("/api/plans/{plan_id}")
-async def api_update_plan(plan_id: str, request: Request, token=Depends(require_auth)):
-    import sales
-
-    existing = sales.get_plan(plan_id)
-    if not existing:
-        raise HTTPException(status_code=404, detail="پلن یافت نشد")
-
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="اطلاعات نامعتبر است")
-
-    updated = dict(existing)
-
-    if "name" in body:
-        updated["name"] = str(body["name"]).strip() or updated.get("name")
-    if "badge" in body:
-        updated["badge"] = str(body["badge"]).strip()
-    if "days" in body:
-        updated["days"] = safe_int(body["days"], default=existing.get("days", 0), minimum=0)
-    if "ip_limit" in body:
-        updated["ip_limit"] = safe_int(body["ip_limit"], default=existing.get("ip_limit", 0), minimum=0)
-    if "stars" in body:
-        updated["stars"] = safe_int(body["stars"], default=existing.get("stars", 0), minimum=0)
-    if "order" in body:
-        updated["order"] = safe_int(body["order"], default=existing.get("order", 0), minimum=0)
-    if "volume_gb" in body:
-        updated["volume_gb"] = safe_float(body["volume_gb"], default=existing.get("volume_gb", 0), minimum=0)
-    if "speed_mbps" in body:
-        updated["speed_mbps"] = safe_float(body["speed_mbps"], default=existing.get("speed_mbps", 0), minimum=0)
-    if "featured" in body:
-        updated["featured"] = bool(body["featured"])
-
-    await sales.upsert_plan(plan_id, updated)
-
-    log_activity("plan", f"پلن «{updated.get('name')}» ویرایش شد", "ok")
-
-    return {"ok": True, "plan": sales.get_plan(plan_id)}
-
-
-@app.delete("/api/plans/{plan_id}")
-async def api_delete_plan(plan_id: str, token=Depends(require_auth)):
-    import sales
-
-    existing = sales.get_plan(plan_id)
-    if not existing:
-        raise HTTPException(status_code=404, detail="پلن یافت نشد")
-
-    await sales.delete_plan(plan_id)
-
-    log_activity("plan", f"پلن «{existing.get('name')}» حذف شد", "warn")
-
-    return {"ok": True}
-
-
-# ============================================================
 # ADVANCED REPORTING
 # ============================================================
 
@@ -7320,8 +6538,6 @@ async def api_reports_summary(request: Request, token=Depends(require_auth)):
             "date": key,
             "traffic_mb": round(bucket.get("traffic_bytes", 0) / (1024 ** 2), 2),
             "new_links": bucket.get("new_links", 0),
-            "orders": bucket.get("orders", 0),
-            "stars": bucket.get("stars", 0),
         })
 
     now_ts = time.time()
@@ -7360,9 +6576,6 @@ async def api_reports_summary(request: Request, token=Depends(require_auth)):
 
     top_links.sort(key=lambda x: x["used_bytes"], reverse=True)
 
-    import sales
-    sales_totals = sales.sales_stats()
-
     return {
         "ok": True,
         "series": series,
@@ -7373,9 +6586,6 @@ async def api_reports_summary(request: Request, token=Depends(require_auth)):
             "unlimited_links": unlimited_links,
             "subs": len(SUBS),
             "admins": len(ADMINS) + 1,
-            "orders": sales_totals.get("orders", 0),
-            "stars": sales_totals.get("stars", 0),
-            "customers": sales_totals.get("customers", 0),
         },
         "protocol_distribution": [
             {"protocol": proto, "count": count} for proto, count in protocol_counts.items()
