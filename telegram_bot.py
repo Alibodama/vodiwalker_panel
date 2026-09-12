@@ -1,8 +1,3 @@
-# telegram_bot.py
-# ══════════════════════════════════════════════════════════════════════════════
-# ربات مدیریت تلگرام — ساخت/حذف/فعال‌غیرفعال/مشاهده‌ی کانفیگ‌ها، فقط برای ادمین‌های
-# مجاز (TELEGRAM_ADMIN_IDS). با long polling کار می‌کنه، نیازی به دامنه/webhook نداره.
-# ══════════════════════════════════════════════════════════════════════════════
 
 import asyncio
 import os
@@ -11,8 +6,6 @@ import re
 import httpx
 
 from datetime import datetime, timedelta
-
-from sales import PLANS, get_plan, create_payload, fulfill_payment, load_sales, user_orders, sales_stats
 
 from main import (
     LINKS,
@@ -45,8 +38,6 @@ from main import (
 )
 
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-# فروش اشتراک فعلاً عمداً خاموش است؛ فقط مدیریت سرویس از ربات فعال می‌ماند.
-SALES_ENABLED = os.environ.get("VODIWALKER_SALES_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
 _admin_ids_raw = os.environ.get("TELEGRAM_ADMIN_IDS", "").strip()
 ADMIN_IDS = {int(x) for x in _admin_ids_raw.replace(" ", "").split(",") if x.isdigit()} if _admin_ids_raw else set()
 
@@ -177,15 +168,12 @@ def _is_admin(chat_id: int) -> bool:
 
 # ── Keyboards ────────────────────────────────────────────────────────────────
 def _main_menu_kb():
-    rows = [
-        [{"text": "📊 داشبورد زنده", "callback_data": "stats"}],
-        [{"text": "📋 اینباندها و کانفیگ‌ها", "callback_data": "list:0"}, {"text": "➕ ساخت اینباند", "callback_data": "newcfg"}],
-        [{"text": "👥 کلاینت‌ها", "callback_data": "list:0"}, {"text": "🗂 سابسکریپشن‌ها", "callback_data": "subs:0"}],
-    ]
-    if SALES_ENABLED:
-        rows.append([{ "text": "🛒 فروشگاه و پلن‌ها", "callback_data": "store" }])
-    rows.append([{ "text": "⚙️ وضعیت مدیریت", "callback_data": "menu" }])
-    return {"inline_keyboard": rows}
+    return {"inline_keyboard": [
+        [{"text": "📊 آمار کلی", "callback_data": "stats"}],
+        [{"text": "📋 لیست کانفیگ‌ها", "callback_data": "list:0"}, {"text": "➕ ساخت کانفیگ", "callback_data": "newcfg"}],
+        [{"text": "🗂 گروه‌های ساب", "callback_data": "subs:0"}],
+        [{"text": "🔄 رفرش", "callback_data": "menu"}],
+    ]}
 
 def _links_list_kb(page: int):
     items = sorted(LINKS.items(), key=lambda kv: kv[1].get("created_at", ""), reverse=True)
@@ -524,84 +512,6 @@ def _progress_bar(pct: float, width: int = 10) -> str:
     filled = round((pct / 100) * width)
     return "█" * filled + "░" * (width - filled)
 
-def _plan_emoji(idx: int) -> str:
-    return ["⚡", "🚀", "👑", "💎", "🔥", "🌟"][idx % 6]
-
-def _store_kb():
-    rows=[]
-    for pid,p in PLANS.items():
-        badge = f" ({p['badge']})" if p.get("featured") else ""
-        rows.append([{"text": f"🛒 {p['name']}{badge} — {p['stars']} ⭐", "callback_data": f"buy:{pid}"}])
-    rows.append([{"text":"🧾 خریدهای من","callback_data":"myorders"}])
-    return {"inline_keyboard":rows}
-
-def _store_text():
-    plans = sorted(PLANS.values(), key=lambda p: p.get("order", 0))
-    lines = ["🛍 <b>VodiWalker Store</b>",
-              "",
-              "پلن موردنظر رو انتخاب کن؛ بعد از پرداخت، کانفیگ اختصاصی خودت به‌صورت خودکار ساخته و همون‌جا تحویل داده می‌شه.",
-              ""]
-    for i, p in enumerate(plans):
-        star = "⭐️ " + p.get("badge", "") if p.get("featured") else ""
-        lines.append(
-            f"{_plan_emoji(i)} <b>{p['name']}</b> {star}\n"
-            f"  📅 {p['days']} روز  ·  📦 {p['volume_gb']}GB  ·  🚀 {p['speed_mbps']}Mbps  ·  👥 {p['ip_limit']} IP\n"
-            f"  💳 {p['stars']} ⭐️ Stars"
-        )
-    lines.append("")
-    lines.append("برای مشاهده‌ی خریدهای قبلی از دکمه‌ی «🧾 خریدهای من» استفاده کن.")
-    return "\n".join(lines)
-
-async def _send_invoice(chat_id, plan_id):
-    plan=get_plan(plan_id)
-    if not plan: return
-    payload=create_payload(plan_id, chat_id)
-    await _call("sendInvoice",
-        chat_id=chat_id,
-        title=f"VodiWalker {plan['name']}",
-        description=f"اشتراک {plan['days']} روزه | {plan['volume_gb']}GB | تا {plan['speed_mbps']}Mbps",
-        payload=payload,
-        provider_token=os.environ.get("TELEGRAM_PAYMENT_PROVIDER_TOKEN",""),
-        currency=os.environ.get("TELEGRAM_PAYMENT_CURRENCY","XTR"),
-        prices=[{"label":f"VodiWalker {plan['name']}","amount":int(plan["stars"])}],
-        start_parameter=f"buy_{plan_id}",
-        need_name=False,
-        need_phone_number=False,
-        need_email=False,
-        is_flexible=False,
-    )
-
-async def _handle_precheckout(q):
-    qid=q.get("id")
-    payload=str(q.get("invoice_payload",""))
-    ok=payload.startswith("vw|")
-    await _call("answerPreCheckoutQuery", pre_checkout_query_id=qid, ok=ok,
-                error_message=None if ok else "سفارش نامعتبر است.")
-
-async def _handle_successful_payment(msg):
-    sp=msg.get("successful_payment") or {}
-    payload=str(sp.get("invoice_payload",""))
-    parts=payload.split("|")
-    if len(parts)<4 or parts[0]!="vw":
-        return
-    plan_id=parts[1]
-    try:
-        order,link,uid,sub_url=await fulfill_payment(msg.get("from") or msg.get("chat") or {}, plan_id, sp.get("telegram_payment_charge_id",""))
-        text=(f"✅ <b>پرداخت موفق بود!</b>\n\n"
-              f"پلن: <b>{PLANS[plan_id]['name']}</b>\n"
-              f"اعتبار: {PLANS[plan_id]['days']} روز\n"
-              f"حجم: {PLANS[plan_id]['volume_gb']}GB\n"
-              f"سرعت: {PLANS[plan_id]['speed_mbps']}Mbps\n\n"
-              f"🔗 <b>لینک سابسکریپشن:</b>\n<code>{sub_url}</code>\n\n"
-              "لینک را داخل کلاینت خود وارد کن. این لینک اختصاصی شماست.")
-        await _send(msg["chat"]["id"],text,{"inline_keyboard":[
-            [{"text":"📋 خریدهای من","callback_data":"myorders"}],
-            [{"text":"🛒 خرید اشتراک جدید","callback_data":"store"}]
-        ]})
-    except Exception as exc:
-        await _send(msg["chat"]["id"],"⚠️ پرداخت ثبت شد اما ساخت اشتراک با خطا مواجه شد. لطفاً با پشتیبانی تماس بگیرید.")
-        logger.exception("sales fulfillment failed: %s", exc)
-
 def _admin_welcome_text(base: str) -> str:
     total = len(LINKS)
     active = sum(1 for l in LINKS.values() if is_link_allowed(l))
@@ -612,42 +522,15 @@ async def _handle_message(msg: dict):
     text = (msg.get("text") or "").strip()
     if chat_id is None:
         return
-    # فروشگاه برای همه کاربران فعال است؛ بخش مدیریت فقط برای ادمین‌هاست.
-    if text.startswith("/start"):
-        arg=text.split(maxsplit=1)[1] if len(text.split(maxsplit=1))>1 else ""
-        if SALES_ENABLED and arg.startswith("buy_") and get_plan(arg[4:]):
-            await _send_invoice(chat_id,arg[4:])
-            return
-        if _is_admin(chat_id):
-            _pending.pop(chat_id, None)
-            await _send(chat_id, _admin_welcome_text(get_bot_text("welcome", "👋 <b>VodiWalker Control Center</b>\nمدیریت کامل سرویس و فروشگاه:")), _main_menu_kb())
-        else:
-            await _send(chat_id, "🔒 <b>VodiWalker</b>\n\nفروش اشتراک در حال حاضر غیرفعال است و در نسخه‌های بعدی فعال می‌شود.")
-        return
 
-    if text in ("/plans", "/shop", "/store"):
-        if not SALES_ENABLED:
-            await _send(chat_id, "🔒 فروش اشتراک فعلاً غیرفعال است.\n\nاین ماژول در نسخه‌های بعدی VodiWalker فعال خواهد شد.")
-        else:
-            await _send(chat_id, _store_text(), _store_kb())
-        return
-
-    if text == "/my":
-        orders=user_orders(chat_id)
-        if not orders:
-            await _send(chat_id,"🧾 هنوز خریدی ثبت نشده.",_store_kb()); return
-        lines=["🧾 <b>خریدهای اخیر شما</b>\n"]
-        for o in orders:
-            lines.append(f"• {PLANS.get(o['plan_id'],{}).get('name',o['plan_id'])} — {o.get('created_at','')[:16]}\n  <code>https://{get_host()}/subscription/{o['link_uid']}</code>")
-        await _send(chat_id,"\n".join(lines),_store_kb())
-        return
-
+    # این ربات فقط برای مدیریت پنل است؛ فروشگاه/فروش حذف شده و فقط ادمین‌های
+    # مجاز (TELEGRAM_ADMIN_IDS) اجازه‌ی استفاده دارند.
     if not _is_admin(chat_id):
-        await _send(chat_id, "🔒 فروش اشتراک فعلاً غیرفعال است.\n\nبرای مدیریت سرویس، فقط ادمین‌های مجاز دسترسی دارند.")
         return
 
-    if text == "/admin":
-        await _send(chat_id, _admin_welcome_text(get_bot_text("welcome", "🛠 <b>VodiWalker Control Center</b>")), _main_menu_kb())
+    if text.startswith("/start") or text == "/admin":
+        _pending.pop(chat_id, None)
+        await _send(chat_id, _admin_welcome_text(get_bot_text("welcome", "👋 <b>VodiWalker Control Center</b>\nمدیریت کامل سرویس:")), _main_menu_kb())
         return
 
     if text == "/menu":
@@ -794,37 +677,9 @@ async def _handle_callback(cb: dict):
     if chat_id is None:
         return
 
-    # Public storefront callbacks
-    if data == "store":
-        if not SALES_ENABLED:
-            await _answer_cb(cb_id, "فروش اشتراک فعلاً غیرفعال است.")
-            await _edit(chat_id, message_id, "🔒 <b>فروش اشتراک موقتاً غیرفعال است</b>\n\nاین بخش پس از آماده‌سازی ماژول فروش در نسخه‌های بعدی فعال می‌شود.\n\n🛠 مدیریت اینباند، کلاینت و سابسکریپشن همچنان فعال است.", _main_menu_kb())
-            return
-        await _answer_cb(cb_id)
-        await _edit(chat_id, message_id, _store_text(), _store_kb())
-        return
-    if data.startswith("buy:"):
-        if not SALES_ENABLED:
-            await _answer_cb(cb_id, "فروش اشتراک فعلاً غیرفعال است.")
-            return
-        await _answer_cb(cb_id, "در حال آماده‌سازی فاکتور…")
-        await _send_invoice(chat_id, data.split(":",1)[1])
-        return
-    if data == "myorders":
-        await _answer_cb(cb_id)
-        orders=user_orders(chat_id)
-        if not orders:
-            await _edit(chat_id,message_id,"🧾 هنوز خریدی ثبت نشده.",_store_kb())
-        else:
-            lines=["🧾 <b>خریدهای اخیر شما</b>\n"]
-            for o in orders:
-                plan=PLANS.get(o.get("plan_id"),{})
-                lines.append(f"• {plan.get('name',o.get('plan_id'))} — {o.get('created_at','')[:16]}\n<code>https://{get_host()}/subscription/{o.get('link_uid')}</code>")
-            await _edit(chat_id,message_id,"\n".join(lines),_store_kb())
-        return
-
+    # ربات فقط برای مدیریت پنل است؛ فروشگاه حذف شده و فقط ادمین‌ها دسترسی دارند.
     if not _is_admin(chat_id):
-        await _answer_cb(cb_id, "⛔ از فروشگاه استفاده کن")
+        await _answer_cb(cb_id)
         return
     await _answer_cb(cb_id)
 
@@ -837,30 +692,13 @@ async def _handle_callback(cb: dict):
         total = len(LINKS)
         active = sum(1 for l in LINKS.values() if is_link_allowed(l))
         total_used = sum(int(l.get("used_bytes", 0) or 0) for l in LINKS.values())
-        st = sales_stats()
         await _edit(chat_id, message_id,
                     f"📊 <b>آمار کلی VodiWalker</b>\n\n"
                     f"🌐 کل کانفیگ‌ها: <b>{total}</b>\n"
                     f"🟢 فعال: <b>{active}</b>\n"
                     f"🔴 غیرفعال/منقضی: <b>{total-active}</b>\n"
                     f"📦 کل مصرف: <b>{fmt_bytes(total_used)}</b>\n"
-                    f"🗂 گروه‌های ساب: <b>{len(SUBS)}</b>\n\n"
-                    f"👥 مشتریان فروشگاه: <b>{st['customers']}</b>\n"
-                    f"🧾 سفارش‌های موفق: <b>{st['orders']}</b>\n"
-                    f"⭐ مجموع فروش: <b>{st['stars']}</b> Stars",
-                    _main_menu_kb())
-        return
-
-    if data == "salesstats":
-        if not SALES_ENABLED:
-            await _edit(chat_id,message_id,"🔒 <b>گزارش فروش</b>\n\nماژول فروش فعلاً غیرفعال است و در نسخه‌های بعدی فعال می‌شود.",_main_menu_kb())
-            return
-        st=sales_stats()
-        await _edit(chat_id,message_id,
-                    f"📈 <b>گزارش فروش VodiWalker</b>\n\n"
-                    f"👥 مشتریان: <b>{st['customers']}</b>\n"
-                    f"🧾 سفارش‌های موفق: <b>{st['orders']}</b>\n"
-                    f"⭐ مجموع فروش: <b>{st['stars']}</b> Stars",
+                    f"🗂 گروه‌های ساب: <b>{len(SUBS)}</b>",
                     _main_menu_kb())
         return
 
@@ -1225,20 +1063,15 @@ async def _poll_loop():
     logger.info(f"🤖 Telegram bot polling started (admins: {len(ADMIN_IDS)})")
     while _running:
         try:
-            res = await _call("getUpdates", offset=offset, timeout=30, allowed_updates=["message", "callback_query", "pre_checkout_query"])
+            res = await _call("getUpdates", offset=offset, timeout=30, allowed_updates=["message", "callback_query"])
             if not res or not res.get("ok"):
                 await asyncio.sleep(3)
                 continue
             for upd in res.get("result", []):
                 offset = upd["update_id"] + 1
                 try:
-                    if "pre_checkout_query" in upd:
-                        await _handle_precheckout(upd["pre_checkout_query"])
-                    elif "message" in upd:
-                        if upd["message"].get("successful_payment"):
-                            await _handle_successful_payment(upd["message"])
-                        else:
-                            await _handle_message(upd["message"])
+                    if "message" in upd:
+                        await _handle_message(upd["message"])
                     elif "callback_query" in upd:
                         await _handle_callback(upd["callback_query"])
                 except Exception as e:
