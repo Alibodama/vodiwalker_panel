@@ -1,5 +1,3 @@
-
-
 LOGIN_HTML = r"""<!DOCTYPE html>
 <html lang="fa" dir="rtl" id="htmlRoot">
 <head>
@@ -21,12 +19,18 @@ html[data-lang="en"] body{font-family:var(--font-en)}
 a{color:inherit;text-decoration:none}
 button{font-family:inherit;cursor:pointer}
 body{
-  min-height:100vh;min-height:100svh;min-height:100dvh;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden;padding:24px;
+  min-height:100vh;min-height:100svh;min-height:100dvh;display:flex;align-items:center;justify-content:center;position:relative;overflow-x:hidden;overflow-y:auto;padding:24px;
   background:
     radial-gradient(48% 40% at 50% 8%, rgba(168,85,247,.30), transparent 60%),
     radial-gradient(40% 35% at 12% 85%, rgba(124,58,237,.22), transparent 60%),
     radial-gradient(40% 35% at 90% 80%, rgba(34,197,94,.10), transparent 60%),
     #08050f;
+}
+/* روی صفحات کوتاه (موبایل، زوم بالا، پنجره کوچک) اجازه می‌ده کاربر اسکرول کنه
+   تا کل کارت (شامل دکمه‌ی «ثبت‌نام ادمینی» زیر کارت ورود) قابل دیدن و کلیک باشه؛
+   وقتی محتوا داخل صفحه جا می‌شه ظاهر صفحه دقیقاً مثل قبل باقی می‌مونه. */
+@media (max-height:760px){
+  body{align-items:flex-start;padding-top:28px;padding-bottom:28px}
 }
 .grid-bg{position:absolute;inset:0;opacity:.35;background-image:linear-gradient(rgba(255,255,255,.045) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.045) 1px,transparent 1px);background-size:38px 38px;mask-image:radial-gradient(65% 55% at 50% 30%,#000 20%,transparent 85%)}
  .grid-bg:before{content:"";position:absolute;inset:-2%;background:conic-gradient(from 0deg,transparent 0deg,rgba(168,85,247,.12) 65deg,transparent 130deg,rgba(62,166,255,.10) 210deg,transparent 290deg);filter:blur(24px);animation:ambientSpin 18s linear infinite;will-change:transform;contain:strict}
@@ -96,21 +100,100 @@ html[dir="ltr"] .toggle-eye{left:auto;right:12px}
 @keyframes spin{to{transform:rotate(360deg)}}
 .spin{animation:spin .7s linear infinite}
 .foot{margin-top:22px;text-align:center;font-size:11.5px;color:var(--sub2)}
+.admin-reg-row{margin-top:16px;padding-top:14px;border-top:1px dashed var(--line);text-align:center}
+.admin-reg-btn{width:100%;background:rgba(255,255,255,.03);border:1px dashed var(--line2);color:var(--sub);padding:11px;border-radius:12px;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;gap:8px;transition:.15s}
+.admin-reg-btn:hover{color:var(--text);border-color:var(--accent);background:rgba(168,85,247,.07)}
+.areg-overlay{position:fixed;inset:0;z-index:50;display:none;align-items:center;justify-content:center;background:rgba(4,2,10,.72);backdrop-filter:blur(3px);padding:18px}
+.areg-overlay.show{display:flex}
+.areg-box{width:100%;max-width:420px;max-height:88vh;overflow:auto;padding:24px;border-radius:20px;background:#100a1e;border:1px solid var(--line2);box-shadow:0 40px 100px -20px rgba(0,0,0,.7);animation:rise .35s ease both}
+.areg-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:16px}
+.areg-badge{display:inline-flex;align-items:center;gap:6px;font-size:9.5px;font-weight:800;color:#c9a8ff;background:rgba(168,85,247,.12);border:1px solid rgba(168,85,247,.25);padding:5px 10px;border-radius:999px;margin-bottom:9px}
+.areg-head h3{font-size:17px;font-weight:900;margin:0 0 6px}
+.areg-head p{font-size:11.5px;color:var(--sub);line-height:1.8;margin:0;max-width:300px}
+.areg-close{background:rgba(255,255,255,.06);border:1px solid var(--line);color:var(--sub);width:32px;height:32px;border-radius:10px;flex-shrink:0;display:grid;place-items:center}
+.areg-close:hover{color:var(--text)}
+.areg-msg{font-size:12px;border-radius:10px;padding:10px 12px;margin-bottom:14px;line-height:1.8}
+.areg-msg.ok{background:rgba(34,197,94,.10);border:1px solid rgba(34,197,94,.28);color:#7cf0a8}
+.areg-msg.err{background:rgba(239,68,68,.10);border:1px solid rgba(239,68,68,.30);color:#ff9b9b}
+.areg-hint{margin-top:14px;font-size:10.5px;color:var(--sub2);line-height:1.9;text-align:center}
 @media(max-width:480px){h1{font-size:24px}.card{padding:22px 18px}.login-status{font-size:7.5px}.security-strip span{font-size:7.5px}}
 @media (prefers-reduced-motion: reduce){
   .grid-bg:before,.scanline,.ambient-orb,.dot,.login-card-glow,.orbit-ring,.orbit-ring2,.badge-glow,.login-status .live,.wrap{animation:none!important}
 }
 @media (max-width:820px), (pointer:coarse){
-  /* Phones/low-end GPUs: keep every element in place, just stop the continuous
-     repaint/compositing work that made the login screen feel heavy and jittery. */
-  .grid-bg:before,.scanline,.ambient-orb,.login-card-glow,.orbit-ring,.orbit-ring2,.badge-glow{animation:none!important}
+  /* Phones/low-end GPUs: the jank came from the blurred/filtered layers being
+     repainted every frame (conic-gradient + blur, glow blur, scanline gradient
+     shift) — those are the expensive ones and stay off on touch/small screens.
+     .orbit-ring / .orbit-ring2 (the spinning "planet" rings) only animate a
+     `transform`, which the compositor handles almost for free, so they keep
+     spinning on mobile instead of being frozen along with the heavy effects. */
+  .grid-bg:before,.scanline,.ambient-orb,.login-card-glow,.badge-glow{animation:none!important}
   .grid-bg:before{filter:blur(14px)}
   .login-card-glow{filter:blur(5px)}
   .badge-glow{filter:blur(4px)}
+  .orbit-ring,.orbit-ring2{will-change:transform}
 }
 </style>
 <style>
 .perm-grid,.bot-text-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:12px}.perm-item{display:flex;align-items:center;gap:9px;padding:11px 12px;border:1px solid var(--line);background:var(--panel2);border-radius:13px;font-size:12px}.perm-item input{accent-color:var(--accent)}.bot-text-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.bot-text-grid textarea{width:100%;resize:vertical;min-height:90px;background:var(--panel2);border:1px solid var(--line);color:var(--text);border-radius:12px;padding:11px;font:inherit;line-height:1.8}@media(max-width:700px){.perm-grid,.bot-text-grid{grid-template-columns:1fr}}
+.tpl-studio-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap}
+.tpl-badge{display:flex;align-items:center;gap:6px;padding:6px 11px;border-radius:99px;background:rgba(148,85,255,.12);color:#b79bff;border:1px solid rgba(148,85,255,.22);font-size:10.5px;font-weight:800;white-space:nowrap}
+.tpl-grid{display:grid;grid-template-columns:1.2fr 1fr;gap:14px;margin-top:14px}
+.tpl-fields{display:flex;flex-direction:column;gap:8px}
+.tpl-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 13px;border:1px solid var(--line);background:var(--panel2);border-radius:13px;cursor:pointer;transition:border-color .12s ease}
+.tpl-row:hover{border-color:var(--line2)}
+.tpl-row-main{display:flex;align-items:center;gap:10px;min-width:0}
+.tpl-row-main i{width:32px;height:32px;flex-shrink:0;display:grid;place-items:center;border-radius:9px;background:rgba(148,85,255,.12);color:#a997ff;font-size:15px}
+.tpl-row-main b{display:block;font-size:12px}
+.tpl-row-main small{display:block;color:var(--sub2);font-size:9.5px;margin-top:2px}
+input.tpl-switch{appearance:none;-webkit-appearance:none;width:36px;height:20px;border-radius:99px;background:var(--line2);border:1px solid var(--line);position:relative;cursor:pointer;flex-shrink:0;margin:0;transition:background-color .16s ease}
+input.tpl-switch:after{content:'';position:absolute;width:14px;height:14px;top:2px;right:2px;border-radius:50%;background:#fff;transition:right .16s ease;box-shadow:0 1px 3px rgba(0,0,0,.3)}
+input.tpl-switch:checked{background:linear-gradient(90deg,var(--accent),var(--accent-d));border-color:transparent}
+input.tpl-switch:checked:after{right:18px}
+.tpl-preview{padding:14px;border:1px dashed var(--line2);border-radius:14px;background:linear-gradient(155deg,rgba(148,85,255,.06),rgba(255,255,255,.015))}
+.tpl-preview-label{display:flex;align-items:center;gap:7px;font-size:10.5px;color:var(--sub);font-weight:700;margin-bottom:10px}
+.tpl-preview-row{display:flex;align-items:center;gap:9px;padding:11px 12px;border-radius:12px;background:var(--panel);border:1px solid var(--line)}
+.tpl-preview-dot{width:9px;height:9px;border-radius:50%;background:var(--good);box-shadow:0 0 0 3px rgba(34,197,139,.18);flex-shrink:0}
+.tpl-preview-text{flex:1;min-width:0;font-size:12px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;direction:ltr;text-align:left}
+.tpl-preview-proto{font-size:9px;font-weight:800;color:var(--accent);background:rgba(148,85,255,.12);padding:3px 8px;border-radius:99px;flex-shrink:0}
+@media(max-width:760px){.tpl-grid{grid-template-columns:1fr}}
+.admin-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}
+.admin-card{position:relative;overflow:hidden;padding:18px;border:1px solid var(--line);background:linear-gradient(155deg,var(--panel) 0%,var(--panel2) 100%);border-radius:18px;box-shadow:var(--shadow-sm);transition:transform .15s ease,box-shadow .15s ease,border-color .15s ease}
+.admin-card:hover{transform:translateY(-2px);box-shadow:var(--shadow-md);border-color:var(--line2)}
+.admin-card.is-owner{border-color:rgba(245,165,36,.35);background:linear-gradient(155deg,rgba(245,165,36,.08) 0%,var(--panel2) 60%)}
+.admin-card.is-inactive{opacity:.62}
+.admin-card-top{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+.admin-id{display:flex;align-items:center;gap:11px;min-width:0}
+.admin-avatar{flex:none;width:42px;height:42px;border-radius:13px;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent-d));box-shadow:0 6px 16px rgba(148,85,255,.28)}
+.admin-card.is-owner .admin-avatar{background:linear-gradient(135deg,#f5a524,#c9820a);box-shadow:0 6px 16px rgba(245,165,36,.3)}
+.admin-meta{min-width:0}
+.admin-meta .admin-name{font-size:14px;font-weight:800;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.admin-meta .admin-sub{display:flex;align-items:center;gap:6px;margin-top:3px;font-size:11px;color:var(--sub)}
+.admin-role-badge{flex:none;display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border-radius:999px;font-size:10px;font-weight:700;letter-spacing:.02em}
+.admin-role-badge.owner{color:#f5a524;background:rgba(245,165,36,.14);border:1px solid rgba(245,165,36,.3)}
+.admin-role-badge.admin{color:var(--accent);background:rgba(148,85,255,.12);border:1px solid rgba(148,85,255,.28)}
+.admin-status-dot{width:7px;height:7px;border-radius:50%;background:var(--good);box-shadow:0 0 0 3px rgba(34,197,139,.15)}
+.admin-card.is-inactive .admin-status-dot{background:var(--bad);box-shadow:0 0 0 3px rgba(242,73,85,.15)}
+.admin-perm-row{display:flex;flex-wrap:wrap;gap:5px;margin-top:14px}
+.admin-perm-chip{font-size:10px;padding:3px 8px;border-radius:8px;background:var(--panel2);border:1px solid var(--line);color:var(--sub)}
+.admin-perm-chip.all{color:#f5a524;border-color:rgba(245,165,36,.3);background:rgba(245,165,36,.1)}
+.admin-card-foot{display:flex;align-items:center;justify-content:space-between;margin-top:16px;padding-top:12px;border-top:1px dashed var(--line)}
+.admin-card-foot .admin-login{font-size:10.5px;color:var(--sub2)}
+.admin-card-foot .row-actions{gap:6px}
+.admins-hero{display:grid;grid-template-columns:1fr auto;gap:16px;align-items:center;margin-bottom:14px;padding:20px;border:1px solid var(--line);border-radius:18px;background:linear-gradient(135deg,rgba(124,92,255,.11),rgba(57,214,255,.035));box-shadow:var(--shadow-sm)}.admins-hero h2{font-size:18px;margin:0 0 5px}.admins-hero p{font-size:10px;color:var(--sub);margin:0;line-height:1.9}.admins-summary{display:flex;gap:8px;flex-wrap:wrap}.admins-summary .sum{min-width:92px;padding:11px 13px;border:1px solid var(--line);border-radius:13px;background:rgba(255,255,255,.025);text-align:center}.admins-summary b{display:block;font-size:18px}.admins-summary small{display:block;color:var(--sub2);font-size:8px;margin-top:3px}.admin-card{min-height:188px;display:flex;flex-direction:column}.admin-card-top{padding-bottom:13px;border-bottom:1px dashed var(--line)}.admin-id{flex:1}.admin-avatar{position:relative;overflow:hidden}.admin-avatar:after{content:"";position:absolute;inset:0;background:linear-gradient(120deg,transparent 35%,rgba(255,255,255,.18) 50%,transparent 65%);transform:translateX(-130%);transition:transform .55s ease}.admin-card:hover .admin-avatar:after{transform:translateX(130%)}.admin-perm-row{min-height:45px;align-content:flex-start}.admin-perm-chip{transition:.15s ease}.admin-perm-chip:hover{border-color:var(--line2);color:var(--text)}.admin-card-foot{margin-top:auto}.admin-login{direction:ltr;text-align:left}.admin-actions-label{display:none}.admin-card-foot .row-actions{gap:8px}.admin-card-foot .iconbtn{width:38px;height:34px;border-radius:11px;font-size:15px;background:linear-gradient(145deg,var(--panel2),rgba(124,92,255,.08));border-color:var(--line2);box-shadow:0 7px 18px rgba(0,0,0,.10)}.admin-card-foot .iconbtn.danger{color:var(--bad)}.admin-card-foot .iconbtn.power{color:var(--accent)}.admin-card-foot .iconbtn:hover{transform:translateY(-1px);box-shadow:0 10px 24px rgba(124,92,255,.18)}.access-command-copy{min-width:0}.command-badge{display:inline-flex;align-items:center;gap:7px;padding:6px 10px;border-radius:999px;border:1px solid rgba(124,92,255,.28);background:rgba(124,92,255,.10);color:var(--accent);font-size:9px;font-weight:900;letter-spacing:.08em}.access-command-copy h2{font-size:22px;margin:12px 0 7px;letter-spacing:-.02em}.access-command-copy p{max-width:760px}.command-points{display:flex;flex-wrap:wrap;gap:7px;margin-top:13px}.command-points span{display:inline-flex;align-items:center;gap:5px;padding:6px 9px;border:1px solid var(--line);border-radius:9px;background:rgba(255,255,255,.025);font-size:9px;color:var(--sub)}.command-points i{color:var(--good)}.admin-directory{overflow:hidden}.directory-live{display:inline-flex;align-items:center;gap:6px;font-size:9px;color:var(--good);font-weight:800}.directory-live i{width:6px;height:6px;border-radius:50%;background:var(--good);box-shadow:0 0 0 4px rgba(34,197,139,.12)}.admin-directory .panel-head{border-bottom:1px solid var(--line)}@media(max-width:700px){.access-command-copy h2{font-size:18px}.command-points{display:grid;grid-template-columns:1fr}}.admin-login-block{display:flex;flex-direction:column;gap:4px}.admin-login-label{font-size:8px;color:var(--sub2)}.admin-card{position:relative;overflow:hidden}.admin-card:before{content:"";position:absolute;inset:0 0 auto 0;height:2px;background:linear-gradient(90deg,var(--accent),transparent);opacity:.7}.admin-card.is-owner:before{background:linear-gradient(90deg,#f5a524,transparent)}.feature-lock{text-align:center;padding:16px 6px 8px}.feature-lock-icon{width:68px;height:68px;margin:0 auto 14px;display:grid;place-items:center;border-radius:20px;background:linear-gradient(145deg,rgba(124,92,255,.18),rgba(53,214,255,.08));border:1px solid rgba(124,92,255,.28);font-size:28px;color:var(--accent)}.feature-lock h3{margin:0 0 8px;font-size:18px}.feature-lock p{margin:0 auto;max-width:520px;line-height:2;color:var(--sub);font-size:11px}.feature-lock-note{display:inline-flex;gap:7px;align-items:center;margin-top:16px;padding:8px 11px;border-radius:999px;border:1px solid var(--line);background:var(--panel2);font-size:9px;color:var(--sub2)}@media(max-width:700px){.admins-hero{grid-template-columns:1fr}.admins-summary{justify-content:flex-start}}
+.areq-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 14px;border:1px solid var(--line);border-radius:14px;background:rgba(255,255,255,.02);margin-bottom:10px}
+.areq-row:last-child{margin-bottom:0}
+.areq-info{display:flex;flex-direction:column;gap:3px;min-width:0}
+.areq-name{font-weight:800;font-size:12.5px}
+.areq-meta{font-size:10px;color:var(--sub2);display:flex;gap:10px;flex-wrap:wrap}
+.areq-meta span{display:inline-flex;align-items:center;gap:4px}
+.areq-note{font-size:10.5px;color:var(--sub);margin-top:2px}
+.areq-actions{display:flex;gap:8px;flex-shrink:0}
+.areq-empty{text-align:center;padding:22px 10px;color:var(--sub2);font-size:11px}
+.areq-status{font-size:9px;font-weight:800;padding:4px 9px;border-radius:999px}
+.areq-status.approved{background:rgba(34,197,94,.10);color:#7cf0a8;border:1px solid rgba(34,197,94,.25)}
+.areq-status.rejected{background:rgba(239,68,68,.10);color:#ff9b9b;border:1px solid rgba(239,68,68,.25)}
+@media(max-width:700px){.admin-grid{grid-template-columns:1fr}}
 </style></head>
 <body>
 <div class="grid-bg"></div><div class="scanline"></div><div class="ambient-orb a"></div><div class="ambient-orb b"></div>
@@ -162,8 +245,37 @@ html[dir="ltr"] .toggle-eye{left:auto;right:12px}
       <button class="btn-main" type="submit" id="submitBtn"><i class="ti ti-login-2"></i><span data-i18n="submit"></span></button>
     </form>
     <div class="security-strip"><span><i class="ti ti-shield-check"></i>Protected Session</span><span><i class="ti ti-lock"></i>Secure Cookie</span><span><i class="ti ti-activity"></i>System Monitor</span></div>
+    <div class="admin-reg-row"><button type="button" class="admin-reg-btn" onclick="openAdminReg()"><i class="ti ti-user-plus"></i><span data-i18n="adminRegBtn"></span></button></div>
   </div>
   <div class="foot">VodiWalker Control Center &copy; <span data-i18n="rights"></span></div>
+</div>
+
+<div class="areg-overlay" id="aregOverlay" onclick="if(event.target===this)closeAdminReg()">
+  <div class="areg-box">
+    <div class="areg-head">
+      <div>
+        <div class="areg-badge"><i class="ti ti-user-shield"></i><span data-i18n="adminRegBadge"></span></div>
+        <h3 data-i18n="adminRegTitle"></h3>
+        <p data-i18n="adminRegDesc"></p>
+      </div>
+      <button type="button" class="areg-close" onclick="closeAdminReg()"><i class="ti ti-x"></i></button>
+    </div>
+    <div class="field">
+      <label data-i18n="adminRegNameLabel"></label>
+      <div class="inp"><input type="text" id="aregName" data-i18n-placeholder="adminRegNamePh"><i class="ti ti-id i-lead"></i></div>
+    </div>
+    <div class="field">
+      <label data-i18n="adminRegTgLabel"></label>
+      <div class="inp"><input type="text" id="aregTg" dir="ltr" data-i18n-placeholder="adminRegTgPh"><i class="ti ti-brand-telegram i-lead"></i></div>
+    </div>
+    <div class="field">
+      <label data-i18n="adminRegNoteLabel"></label>
+      <div class="inp"><input type="text" id="aregNote" data-i18n-placeholder="adminRegNotePh"><i class="ti ti-message i-lead"></i></div>
+    </div>
+    <div id="aregMsg" class="areg-msg" style="display:none"></div>
+    <button class="btn-main" type="button" id="aregSubmitBtn" onclick="submitAdminReg()"><i class="ti ti-send"></i><span data-i18n="adminRegSubmit"></span></button>
+    <p class="areg-hint" data-i18n="adminRegHint"></p>
+  </div>
 </div>
 
 <script>
@@ -177,7 +289,22 @@ var I18N = {
     passLabel: "رمز عبور",
     remember: "مرا به خاطر بسپار",
     submit: "ورود به پنل",
-    rights: "همه‌ی حقوق محفوظ است"
+    rights: "همه‌ی حقوق محفوظ است",
+    adminRegBtn: "ثبت‌نام ادمینی",
+    adminRegBadge: "درخواست همکاری",
+    adminRegTitle: "ثبت‌نام ادمینی VodiWalker",
+    adminRegDesc: "اطلاعاتت رو بفرست، مالک پنل درخواستت رو بررسی می‌کنه و اگر تایید بشه، نام کاربری و رمز از طریق تلگرام برات ارسال می‌شه.",
+    adminRegNameLabel: "نام و نام خانوادگی",
+    adminRegNamePh: "مثلاً: علی رضایی",
+    adminRegTgLabel: "آیدی تلگرام",
+    adminRegTgPh: "@username",
+    adminRegNoteLabel: "توضیح (اختیاری)",
+    adminRegNotePh: "چرا می‌خوای ادمین بشی؟",
+    adminRegSubmit: "ارسال درخواست",
+    adminRegHint: "پس از تایید مالک، اطلاعات ورود از طریق آیدی تلگرامی که وارد کردی برایت ارسال خواهد شد.",
+    adminRegSent: "درخواست شما ثبت شد ✓ منتظر تایید مالک پنل بمانید.",
+    adminRegNameErr: "نام و نام خانوادگی را کامل وارد کنید",
+    adminRegTgErr: "آیدی تلگرام معتبر وارد کنید"
   },
   en: {
     title: "Login | VodiWalker",
@@ -188,7 +315,22 @@ var I18N = {
     passLabel: "Password",
     remember: "Remember me",
     submit: "Sign in",
-    rights: "All rights reserved"
+    rights: "All rights reserved",
+    adminRegBtn: "Register as admin",
+    adminRegBadge: "Collaboration request",
+    adminRegTitle: "VodiWalker admin registration",
+    adminRegDesc: "Send your details. The panel owner will review your request and, if approved, send you a username and password via Telegram.",
+    adminRegNameLabel: "Full name",
+    adminRegNamePh: "e.g. John Smith",
+    adminRegTgLabel: "Telegram ID",
+    adminRegTgPh: "@username",
+    adminRegNoteLabel: "Note (optional)",
+    adminRegNotePh: "Why do you want to be an admin?",
+    adminRegSubmit: "Send request",
+    adminRegHint: "Once approved by the owner, your login details will be sent to the Telegram ID you provided.",
+    adminRegSent: "Your request was submitted ✓ wait for the owner's approval.",
+    adminRegNameErr: "Please enter your full name",
+    adminRegTgErr: "Please enter a valid Telegram ID"
   }
 };
 function applyLang(lang){
@@ -240,6 +382,51 @@ document.getElementById('loginForm').addEventListener('submit', function(){
   btn.disabled = true;
   btn.innerHTML = '<i class="ti ti-loader-2 spin"></i>';
 });
+function curLang(){ try{ return localStorage.getItem('vw_lang') || 'fa'; }catch(e){ return 'fa'; } }
+function openAdminReg(){
+  document.getElementById('aregMsg').style.display = 'none';
+  document.getElementById('aregOverlay').classList.add('show');
+}
+function closeAdminReg(){
+  document.getElementById('aregOverlay').classList.remove('show');
+}
+function aregShowMsg(text, ok){
+  var el = document.getElementById('aregMsg');
+  el.textContent = text;
+  el.className = 'areg-msg ' + (ok ? 'ok' : 'err');
+  el.style.display = 'block';
+}
+async function submitAdminReg(){
+  var d = I18N[curLang()];
+  var name = document.getElementById('aregName').value.trim();
+  var tg = document.getElementById('aregTg').value.trim().replace(/^@/, '');
+  var note = document.getElementById('aregNote').value.trim();
+  if(name.length < 3){ aregShowMsg(d.adminRegNameErr, false); return; }
+  if(tg.length < 3){ aregShowMsg(d.adminRegTgErr, false); return; }
+  var btn = document.getElementById('aregSubmitBtn');
+  btn.disabled = true;
+  var originalHtml = btn.innerHTML;
+  btn.innerHTML = '<i class="ti ti-loader-2 spin"></i>';
+  try{
+    var res = await fetch('/api/admin-requests', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({full_name: name, telegram_id: tg, note: note})
+    });
+    var data = {};
+    try{ data = await res.json(); }catch(e){}
+    if(!res.ok) throw new Error(data.detail || 'خطا');
+    aregShowMsg(d.adminRegSent, true);
+    document.getElementById('aregName').value = '';
+    document.getElementById('aregTg').value = '';
+    document.getElementById('aregNote').value = '';
+  }catch(e){
+    aregShowMsg(e.message || 'خطا', false);
+  }finally{
+    btn.disabled = false;
+    btn.innerHTML = originalHtml;
+  }
+}
 </script>
 </body>
 </html>
@@ -404,47 +591,79 @@ tbody tr:hover{background:rgba(255,255,255,.015)}
 .advanced-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;padding:14px}.pro-action{border:1px solid var(--line);background:linear-gradient(145deg,var(--panel2),rgba(124,92,255,.05));color:var(--text);border-radius:14px;padding:15px;text-align:right;cursor:pointer;box-shadow:var(--ui-glow);}.pro-action i{font-size:20px;color:var(--accent);display:block;margin-bottom:10px}.pro-action b{display:block;font-size:11px}.pro-action small{display:block;color:var(--sub);font-size:9px;margin-top:4px}.accent-pills{max-height:92px;overflow:auto}.radius-sharp .card,.radius-sharp .appearance-card,.radius-sharp .appearance-field,.radius-sharp .btn,.radius-sharp .tab,.radius-sharp .search input{border-radius:6px}.radius-pill .card,.radius-pill .appearance-card,.radius-pill .appearance-field{border-radius:24px}.radius-pill .btn,.radius-pill .tab,.radius-pill .search input{border-radius:999px}.font-small{font-size:92%}.font-large{font-size:108%}.appearance-card,.card,.pro-action{box-shadow:var(--ui-glow)}
 @media(max-width:900px){.advanced-grid{grid-template-columns:1fr 1fr}}@media(max-width:600px){.advanced-grid{grid-template-columns:1fr}}
 
-.ib-quickstats{display:flex;gap:10px;flex-wrap:wrap;margin:0 0 14px}.ib-quickstats>div{display:flex;align-items:center;gap:10px;padding:12px 15px;border:1px solid var(--line);background:rgba(255,255,255,.018);border-radius:13px;flex:1;min-width:150px}.ib-quickstats i{width:32px;height:32px;display:grid;place-items:center;border-radius:9px;background:rgba(124,92,255,.12);color:#a997ff;font-size:15px;flex-shrink:0}.ib-quickstats b{display:block;font-size:17px;line-height:1.2}.ib-quickstats small{display:block;color:var(--sub2);font-size:9.5px;margin-top:2px}
-.ib-tablewrap{padding:0}.ib-scroll{overflow-x:auto}
-.ib-bulkbar{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 14px;background:rgba(124,92,255,.09);border-bottom:1px solid var(--line);font-size:11px;color:var(--sub);flex-wrap:wrap}
+.ib-quickstats{display:flex;gap:10px;flex-wrap:wrap;margin:0 0 14px}.ib-quickstats>div{position:relative;overflow:hidden;display:flex;align-items:center;gap:10px;padding:12px 15px;border:1px solid var(--line);background:linear-gradient(155deg,rgba(255,255,255,.03),rgba(255,255,255,.01));border-radius:14px;flex:1;min-width:150px;transition:transform .15s ease,border-color .15s ease}.ib-quickstats>div:hover{transform:translateY(-2px);border-color:var(--line2)}.ib-quickstats i{width:32px;height:32px;display:grid;place-items:center;border-radius:9px;background:rgba(124,92,255,.12);color:#a997ff;font-size:15px;flex-shrink:0}.ib-quickstats b{display:block;font-size:17px;line-height:1.2}.ib-quickstats small{display:block;color:var(--sub2);font-size:9.5px;margin-top:2px}
+/* ===== Inbound cards (grid) ===== */
+.ib-listbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 12px;flex-wrap:wrap}
+.ib-selectall{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--sub);cursor:pointer;user-select:none}
+.ib-selectall input{width:15px;height:15px;accent-color:var(--accent);cursor:pointer}
+.ib-count{font-size:11px;color:var(--sub2)}
+.ib-bulkbar{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 16px;background:linear-gradient(90deg,rgba(148,85,255,.12),rgba(148,85,255,.04));border:1px solid rgba(148,85,255,.28);border-radius:13px;font-size:11.5px;color:var(--sub);flex-wrap:wrap;margin-bottom:12px}
 .ib-bulkbar b{color:var(--text)}.ib-bulkactions{display:flex;gap:6px}
-table.ib-table{min-width:980px;font-size:12px}
-table.ib-table thead th{white-space:nowrap;position:sticky;top:0;background:var(--panel2);z-index:1}
-table.ib-table tbody tr.ib-row-off{opacity:.55}
-table.ib-table tbody tr.ib-row-off:hover{opacity:.85}
 .ib-check{width:15px;height:15px;accent-color:var(--accent);cursor:pointer}
-.ib-namecell{display:flex;flex-direction:column;gap:5px;min-width:200px;max-width:260px}
-.ib-namecell .ib-name-top{display:flex;align-items:center;gap:6px}
-.ib-namecell b{font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px}
-.ib-namecell .mono{font-size:9.5px;color:var(--sub2)}
-.ib-tagrow{display:flex;flex-wrap:wrap;gap:4px}
-.ib-tagrow span{padding:2px 7px;border-radius:6px;background:var(--panel2);border:1px solid var(--line);font-size:9px;color:var(--sub);white-space:nowrap}
+
+.ib-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(328px,1fr));gap:14px}
+.ib-card{position:relative;display:flex;flex-direction:column;gap:13px;padding:16px;border:1px solid var(--line);border-radius:16px;background:linear-gradient(165deg,rgba(255,255,255,.035),rgba(255,255,255,.012));box-shadow:var(--shadow-sm);overflow:hidden;transition:transform .15s ease,border-color .15s ease,box-shadow .15s ease}
+.ib-card:before{content:'';position:absolute;inset:0 0 auto 0;height:3px;background:linear-gradient(90deg,var(--accent),#39d6ff)}
+.ib-card:hover{border-color:var(--line2);box-shadow:var(--shadow-md)}
+.ib-card.ib-off{opacity:.58}
+.ib-card.ib-off:before{background:var(--sub2)}
+.ib-card.ib-off:hover{opacity:.85}
+.ib-card.ib-selected{border-color:var(--accent);box-shadow:0 0 0 3px rgba(148,85,255,.14)}
+
+.ib-card-head{display:flex;align-items:flex-start;gap:11px}
+.ib-card-check{position:absolute;top:14px;left:14px;opacity:0;pointer-events:none;transition:opacity .15s ease}
+.ib-card:hover .ib-card-check,.ib-card.ib-selected .ib-card-check{opacity:1;pointer-events:auto}
+.ib-avatar{width:40px;height:40px;border-radius:12px;flex-shrink:0;display:grid;place-items:center;font-size:17px;background:rgba(148,85,255,.14);color:#b79bff;border:1px solid rgba(148,85,255,.22)}
+.ib-card-id{flex:1;min-width:0;padding-left:20px}
+.ib-card-id .ib-name-top{display:flex;align-items:center;gap:6px}
+.ib-card-id b{font-size:13px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;display:block}
+.ib-card-id .mono{font-size:9.5px;color:var(--sub2);margin-top:2px}
+.ib-card-controls{display:flex;flex-direction:column;align-items:flex-end;gap:7px;flex-shrink:0}
+
+.ib-tagrow{display:flex;flex-wrap:wrap;gap:5px}
+.ib-tagrow span{padding:3px 8px;border-radius:7px;background:var(--panel2);border:1px solid var(--line);font-size:9.5px;font-weight:700;letter-spacing:.01em;color:var(--sub);white-space:nowrap;transition:border-color .12s ease}
+.ib-card:hover .ib-tagrow span{border-color:var(--line2)}
 .ib-live-tag{background:rgba(34,197,139,.14)!important;color:var(--good)!important;border-color:transparent!important;display:inline-flex!important;align-items:center;gap:4px}
 .ib-live-tag i{width:5px;height:5px;border-radius:50%;background:var(--good);animation:ibLivePulse 1.6s ease-in-out infinite;flex-shrink:0}
 @keyframes ibLivePulse{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.35);opacity:.6}}
 .no-motion .ib-live-tag i{animation:none}
 .ib-linkonly-tag{background:rgba(242,73,85,.12)!important;color:var(--bad)!important;border-color:transparent!important}
-.ib-addr{white-space:nowrap}
-.ib-traffic-cell{min-width:150px}
-.ib-traffic-cell .ib-progress{height:5px;border-radius:99px;background:var(--line2);overflow:hidden;margin-top:6px;width:130px}
-.ib-traffic-cell .ib-progress i{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,var(--accent),#39d6ff);transition:width .3s ease}
-.ib-traffic-cell .ib-progress i.warn{background:linear-gradient(90deg,#f5a524,#f59e0b)}
-.ib-traffic-cell .ib-progress i.crit{background:linear-gradient(90deg,#f24955,#ef4444)}
-.ib-clientcell{display:flex;align-items:center;gap:7px}
-.ib-clientcell .iconbtn{width:27px;height:27px;font-size:12px}
-.ib-exp-cell b.soon{color:var(--warn)}
-.ib-exp-cell b.expired{color:var(--bad)}
-.ib-exp-cell small{display:block;color:var(--sub2);font-size:9px;margin-top:2px}
-.ib-actioncell{display:flex;gap:5px;justify-content:flex-end}
-.ib-actioncell .iconbtn{width:28px;height:28px;font-size:13px}
-.ib-switch{width:34px;height:19px;border-radius:99px;background:var(--line2);position:relative;cursor:pointer;border:0;flex-shrink:0}
+
+.ib-card-addr{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 11px;border-radius:10px;background:var(--panel2);border:1px solid var(--line)}
+.ib-card-addr span.mono{font-size:11px;color:var(--text)}
+.ib-card-addr small{font-size:9px;color:var(--sub2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:110px}
+
+.ib-card-traffic{display:flex;flex-direction:column;gap:6px}
+.ib-card-traffic .ib-tf-top{display:flex;align-items:center;justify-content:space-between;font-size:9.5px;color:var(--sub2)}
+.ib-card-traffic .ib-tf-top b{font-size:11.5px;color:var(--text);font-weight:800}
+.ib-progress{height:6px;border-radius:99px;background:var(--line2);overflow:hidden;box-shadow:inset 0 0 0 1px var(--line)}
+.ib-progress i{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,var(--accent),#39d6ff);transition:width .3s ease}
+.ib-progress i.warn{background:linear-gradient(90deg,#f5a524,#f59e0b)}
+.ib-progress i.crit{background:linear-gradient(90deg,#f24955,#ef4444)}
+
+.ib-card-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:7px}
+.ib-card-stats>div{padding:8px 9px;border-radius:10px;background:var(--panel2);border:1px solid var(--line);text-align:center}
+.ib-card-stats small{display:block;color:var(--sub2);font-size:8.5px;margin-bottom:3px}
+.ib-card-stats b{font-size:11px}
+.ib-card-stats b.soon{color:var(--warn)}
+.ib-card-stats b.expired{color:var(--bad)}
+
+.ib-card-foot{display:flex;align-items:center;justify-content:space-between;gap:8px;padding-top:2px;border-top:1px dashed var(--line);padding-top:11px}
+.ib-card-foot .ib-clientcell{display:flex;align-items:center;gap:7px;font-size:10.5px;color:var(--sub)}
+.ib-card-foot .ib-clientcell .iconbtn{width:27px;height:27px;font-size:12px}
+.ib-card-actions{display:flex;gap:5px}
+.ib-card-actions .iconbtn{width:29px;height:29px;font-size:13px;border-radius:9px;transition:transform .12s ease,background-color .12s ease,color .12s ease}
+.ib-card-actions .iconbtn:hover{transform:translateY(-1px);background:var(--panel2)}
+
+.ib-switch{width:34px;height:19px;border-radius:99px;background:var(--line2);position:relative;cursor:pointer;border:0;flex-shrink:0;box-shadow:inset 0 0 0 1px var(--line)}
 .ib-switch:after{content:'';position:absolute;width:13px;height:13px;top:3px;right:3px;border-radius:50%;background:#fff;transition:.16s}
-.ib-switch.on{background:linear-gradient(90deg,var(--accent),#39d6ff)}
+.ib-switch.on{background:linear-gradient(90deg,var(--accent),#39d6ff);box-shadow:0 0 12px rgba(148,85,255,.35)}
 .ib-switch.on:after{right:18px}
 .ib-status-dot{width:8px;height:8px;border-radius:50%;background:#7688a9;flex-shrink:0}
 .ib-status-dot.green{background:#22c58b;box-shadow:0 0 0 3px rgba(34,197,139,.18);animation:ibLivePulse 1.6s ease-in-out infinite}
 .ib-status-dot.red{background:#f24955}
 .no-motion .ib-status-dot{animation:none}
+@media(max-width:560px){.ib-grid{grid-template-columns:1fr}}
 .ov-quickstats>div{position:relative;overflow:hidden}
 .ov-quickstats>div:nth-child(1) i{background:rgba(124,92,255,.14);color:#a997ff}
 .ov-quickstats>div:nth-child(2) i{background:rgba(34,197,139,.14);color:#22c58b}
@@ -487,15 +706,18 @@ table.ib-table tbody tr.ib-row-off:hover{opacity:.85}
 .ib-section{border:1px solid var(--line);border-radius:14px;background:rgba(255,255,255,.018);overflow:hidden}.ib-section-head{padding:12px 14px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between}.ib-section-head b{font-size:12.5px}.ib-section-head small{font-size:10.5px;color:var(--sub2)}
 .ib-section-body{padding:14px}.ib-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.ib-grid.three{grid-template-columns:1fr 1fr 1fr}.ib-full{grid-column:1/-1}
 .ib-choice{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
-/* Professional inbound protocol/transport matrix */
+/* Professional inbound protocol/transport matrix — renamed to .ib-opt (was
+   accidentally reusing the .ib-card class name used by the main inbound
+   dashboard cards above; that collision was overriding the dashboard card
+   layout with these small radio-tile rules). */
 .ib-matrix{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px}
-.ib-card{position:relative;display:flex;align-items:center;gap:10px;padding:12px;border:1px solid var(--line);border-radius:12px;background:linear-gradient(145deg,rgba(255,255,255,.025),rgba(255,255,255,.01));cursor:pointer;transition:.16s;user-select:none}
-.ib-card:hover{border-color:rgba(168,85,247,.45);transform:translateY(-1px)}
-.ib-card.on{border-color:var(--accent);background:linear-gradient(145deg,rgba(124,58,237,.18),rgba(168,85,247,.08));box-shadow:0 8px 24px rgba(124,58,237,.12),inset 0 0 0 1px rgba(168,85,247,.18)}
-.ib-card.off{opacity:.42;cursor:not-allowed;filter:saturate(.5)}
-.ib-card input{position:absolute;opacity:0;pointer-events:none}
-.ib-card .ib-card-icon{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;background:rgba(255,255,255,.05);color:var(--accent);font-size:17px;flex:0 0 auto}
-.ib-card b{display:block;font-size:11.5px}.ib-card small{display:block;color:var(--sub2);font-size:8.5px;margin-top:2px}
+.ib-opt{position:relative;display:flex;align-items:center;gap:10px;padding:12px;border:1px solid var(--line);border-radius:12px;background:linear-gradient(145deg,rgba(255,255,255,.025),rgba(255,255,255,.01));cursor:pointer;transition:.16s;user-select:none}
+.ib-opt:hover{border-color:rgba(168,85,247,.45);transform:translateY(-1px)}
+.ib-opt.on{border-color:var(--accent);background:linear-gradient(145deg,rgba(124,58,237,.18),rgba(168,85,247,.08));box-shadow:0 8px 24px rgba(124,58,237,.12),inset 0 0 0 1px rgba(168,85,247,.18)}
+.ib-opt.off{opacity:.42;cursor:not-allowed;filter:saturate(.5)}
+.ib-opt input{position:absolute;opacity:0;pointer-events:none}
+.ib-opt .ib-opt-icon{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;background:rgba(255,255,255,.05);color:var(--accent);font-size:17px;flex:0 0 auto}
+.ib-opt b{display:block;font-size:11.5px}.ib-opt small{display:block;color:var(--sub2);font-size:8.5px;margin-top:2px}
 .ib-step{display:flex;align-items:center;gap:8px;margin-bottom:11px}.ib-step .num{width:24px;height:24px;border-radius:8px;display:grid;place-items:center;background:rgba(124,58,237,.16);color:#c9a8ff;font-size:10px;font-weight:900}.ib-step b{font-size:12px}.ib-step small{display:block;color:var(--sub2);font-size:9px;margin-top:2px}
 .ib-divider{height:1px;background:var(--line);margin:15px 0}
 .ib-mode-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
@@ -547,7 +769,7 @@ body{background:radial-gradient(900px 500px at 75% -10%,rgba(124,92,255,.10),tra
 [data-theme="light"] .sidebar{background:linear-gradient(180deg,#ffffff 0%,#f7f8fb 100%);box-shadow:inset -1px 0 rgba(0,0,0,.04),20px 0 50px rgba(30,34,60,.05)}
 .sidebar{width:268px}
 .sidebar-brand{padding:18px 20px 17px}.sidebar-brand img{width:38px;height:38px;border-radius:12px}.sidebar-brand div{font-size:15px}.sidebar-brand small{color:var(--sub2)}
-.tab{padding:11px 14px;border-radius:11px;margin:2px 0}.tab.on{background:linear-gradient(135deg,var(--accent),var(--accent-d));box-shadow:0 10px 25px -10px rgba(124,92,255,.55)}
+.tab{padding:11px 14px;border-radius:11px;margin:2px 0}.tab-locked{opacity:.58}.tab-locked:hover{opacity:.85}.tab.on{background:linear-gradient(135deg,var(--accent),var(--accent-d));box-shadow:0 10px 25px -10px rgba(124,92,255,.55)}
 [data-theme="dark"] .topbar,
 :root:not([data-theme]) .topbar{height:68px;padding:0 26px;background:rgba(13,17,27,.88);backdrop-filter:none;box-shadow:0 1px 0 rgba(255,255,255,.025)}
 [data-theme="light"] .topbar{height:68px;padding:0 26px;background:rgba(255,255,255,.88);backdrop-filter:none;box-shadow:0 1px 0 rgba(30,34,60,.04)}
@@ -588,8 +810,10 @@ body{background:radial-gradient(900px 500px at 75% -10%,rgba(124,92,255,.10),tra
     <div class="tabnav" id="tabnav">
       <div class="tab on" data-pg="overview"><i class="ti ti-layout-dashboard"></i><span data-i18n="nav_overview">داشبورد</span></div>
       <div class="tab" data-pg="links"><i class="ti ti-network"></i><span data-i18n="nav_links">اینباندها</span><span class="bd" id="nb-links">0</span></div>
+      <div class="tab" data-pg="clientmgr"><i class="ti ti-user-plus"></i><span data-i18n="nav_clientmgr">ساخت کلاینت</span></div>
       <div class="tab" data-pg="categories"><i class="ti ti-category"></i><span data-i18n="nav_categories">دسته‌بندی‌ها</span></div>
       <div class="tab" data-pg="subgroups"><i class="ti ti-folders"></i><span data-i18n="nav_subgroups">گروه‌های ساب</span><span class="bd" id="nb-subs">0</span></div>
+      <div class="tab tab-locked" data-pg="plans" title="در نسخه‌های بعد فعال می‌شود"><i class="ti ti-lock"></i><span data-i18n="nav_plans">پلن‌های فروش</span><span class="bd">بعداً</span></div>
       <div class="tab" data-pg="reports"><i class="ti ti-chart-histogram"></i><span data-i18n="nav_reports">گزارش‌ها</span></div>
       <div class="tab" data-pg="admins"><i class="ti ti-users-group"></i><span data-i18n="nav_admins">ادمین‌ها</span></div>
       <div class="tab" data-pg="activity"><i class="ti ti-history"></i><span data-i18n="nav_activity">فعالیت‌ها</span></div>
@@ -647,39 +871,40 @@ body{background:radial-gradient(900px 500px at 75% -10%,rgba(124,92,255,.10),tra
           <div class="search"><input id="linkSearch" placeholder="جستجوی اینباند / UUID..." oninput="renderLinks()"><i class="ti ti-search"></i></div>
           <select class="sel" id="linkFilterCat" onchange="renderLinks()"><option value="">همه دسته‌ها</option></select>
           <span id="ibUpdatedAt" style="font-size:9px;color:var(--sub2);align-self:center;white-space:nowrap">—</span>
+          <button class="btn" id="ibRefreshBtn" onclick="refreshAllInbounds()"><i class="ti ti-refresh" id="ibRefreshIcon"></i>بروزرسانی همه</button>
           <button class="btn" onclick="openAutoLink()"><i class="ti ti-bolt"></i>ساخت سریع</button>
           <button class="btn primary btn-inbound" onclick="openLinkDrawer()"><i class="ti ti-plus"></i>اینباند جدید</button>
         </div>
       </div>
       <div class="ib-quickstats" id="ibQuickStats"></div>
-      <div class="card ib-tablewrap">
-        <div class="ib-bulkbar" id="ibBulkBar" style="display:none">
-          <span><b id="ibSelCount">0</b> مورد انتخاب شده</span>
-          <div class="ib-bulkactions">
-            <button class="btn sm" onclick="bulkToggleLinks(true)"><i class="ti ti-power"></i>فعال‌سازی</button>
-            <button class="btn sm" onclick="bulkToggleLinks(false)"><i class="ti ti-power"></i>غیرفعال‌سازی</button>
-            <button class="btn sm" style="color:var(--bad)" onclick="bulkDeleteLinks()"><i class="ti ti-trash"></i>حذف</button>
-          </div>
-        </div>
-        <div class="ib-scroll">
-        <table class="ib-table">
-          <thead>
-            <tr>
-              <th style="width:34px"><input type="checkbox" class="ib-check" id="ibSelAll" onchange="toggleAllLinks(this.checked)"></th>
-              <th>وضعیت</th>
-              <th>نام / پروتکل</th>
-              <th>آدرس</th>
-              <th>ترافیک</th>
-              <th>کلاینت / اتصال</th>
-              <th>انقضا</th>
-              <th style="text-align:left">عملیات</th>
-            </tr>
-          </thead>
-          <tbody id="linksBody"></tbody>
-        </table>
-        </div>
-        <div class="empty" id="linksEmpty" style="display:none"><i class="ti ti-inbox"></i>کانفیگی یافت نشد</div>
+      <div class="ib-listbar">
+        <label class="ib-selectall"><input type="checkbox" id="ibSelAll" onchange="toggleAllLinks(this.checked)"><span>انتخاب همه</span></label>
+        <span class="ib-count" id="ibCountLabel">0 اینباند</span>
       </div>
+      <div class="ib-bulkbar" id="ibBulkBar" style="display:none">
+        <span><b id="ibSelCount">0</b> مورد انتخاب شده</span>
+        <div class="ib-bulkactions">
+          <button class="btn sm" onclick="bulkToggleLinks(true)"><i class="ti ti-power"></i>فعال‌سازی</button>
+          <button class="btn sm" onclick="bulkToggleLinks(false)"><i class="ti ti-power"></i>غیرفعال‌سازی</button>
+          <button class="btn sm" style="color:var(--bad)" onclick="bulkDeleteLinks()"><i class="ti ti-trash"></i>حذف</button>
+        </div>
+      </div>
+      <div class="ib-grid" id="ibGrid"></div>
+      <div class="empty" id="linksEmpty" style="display:none"><i class="ti ti-inbox"></i>کانفیگی یافت نشد</div>
+    </div>
+
+    <!-- CLIENT MANAGER (بخش جدای ساخت کلاینت از روی اینباند) -->
+    <div class="page" id="pg-clientmgr">
+      <div class="pg-head"><div><div class="eyebrow"><span class="live-dot"></span> VODIWALKER · CLIENT MANAGER</div><h1>ساخت کلاینت</h1><p>یک اینباند را انتخاب کن و از روی همان کلاینت‌های واقعی (زیرمجموعه) بساز؛ بدون نیاز به رفتن به صفحه اینباندها.</p></div>
+        <div class="toolbar"><button class="btn" onclick="loadClientManager()"><i class="ti ti-refresh"></i>بروزرسانی</button></div>
+      </div>
+      <div class="card" style="padding:18px;margin-bottom:14px">
+        <div class="grp"><label>انتخاب اینباند</label>
+          <select class="sel" id="cmInboundSelect" style="width:100%" onchange="loadClientManagerClients(this.value)"><option value="">— انتخاب کنید —</option></select>
+        </div>
+        <div id="cmInboundInfo"></div>
+      </div>
+      <div id="cmBody"></div>
     </div>
 
     <!-- CATEGORIES -->
@@ -696,6 +921,14 @@ body{background:radial-gradient(900px 500px at 75% -10%,rgba(124,92,255,.10),tra
         <div class="toolbar"><button class="btn primary" onclick="openSubGroupDrawer()"><i class="ti ti-plus"></i>گروه جدید</button></div>
       </div>
       <div class="card"><table><thead><tr><th>نام گروه</th><th>تعداد کانفیگ</th><th>لینک عمومی</th><th></th></tr></thead><tbody id="subsBody"></tbody></table></div>
+    </div>
+
+    <!-- PLANS -->
+    <div class="page" id="pg-plans">
+      <div class="pg-head"><div><h1>پلن‌های فروش</h1><p>پلن‌هایی که در ربات فروش تلگرام نمایش داده می‌شوند</p></div>
+        <div class="toolbar"><button class="btn primary" onclick="openPlanDrawer()"><i class="ti ti-plus"></i>پلن جدید</button></div>
+      </div>
+      <div class="card"><table><thead><tr><th>نام</th><th>مدت</th><th>حجم</th><th>سرعت</th><th>قیمت (⭐)</th><th>ویژه</th><th></th></tr></thead><tbody id="plansBody"></tbody></table></div>
     </div>
 
     <!-- REPORTS -->
@@ -715,10 +948,15 @@ body{background:radial-gradient(900px 500px at 75% -10%,rgba(124,92,255,.10),tra
 
     <!-- ADMINS -->
     <div class="page" id="pg-admins">
-      <div class="pg-head"><div><h1>مدیریت ادمین‌ها</h1><p>حساب‌های دسترسی جانبی به پنل (فقط مالک)</p></div>
-        <div class="toolbar"><button class="btn primary" onclick="openAdminDrawer()"><i class="ti ti-user-plus"></i>ادمین جدید</button></div>
+      <div class="pg-head"><div><div class="eyebrow"><span class="live-dot"></span> VODIWALKER · مدیریت حساب</div><h1>مدیریت حساب‌ها</h1><p>اینجا همه حساب‌های مدیریتی پنل را مرتب و دقیق مدیریت می‌کنیم؛ از ساخت ادمین تا تعیین دسترسی و کنترل وضعیت حساب.</p></div>
+        <div class="toolbar"><button class="btn" onclick="loadAdmins()"><i class="ti ti-refresh"></i>همگام‌سازی</button><button class="btn primary" onclick="openAdminDrawer()"><i class="ti ti-user-plus"></i>ایجاد حساب مدیریتی</button></div>
       </div>
-      <div class="card"><table><thead><tr><th>نام کاربری</th><th>نقش</th><th>وضعیت</th><th>آخرین ورود</th><th></th></tr></thead><tbody id="adminsBody"></tbody></table></div>
+      <div class="admins-hero">
+        <div class="access-command-copy"><div class="command-badge"><i class="ti ti-shield-lock"></i> مدیریت حساب‌ها</div><h2>مدیریت کامل ادمین‌ها</h2><p>حساب اصلی پنل دسترسی کامل دارد و برای هر ادمین می‌توان دسترسی‌های موردنیاز را جداگانه تعیین کرد. وضعیت هر حساب و آخرین ورود نیز از همین بخش قابل بررسی است.</p><div class="command-points"><span><i class="ti ti-check"></i> تفکیک دسترسی</span><span><i class="ti ti-check"></i> ثبت آخرین ورود</span><span><i class="ti ti-check"></i> امنیت حساب‌ها</span></div></div>
+        <div class="admins-summary" id="adminsSummary"><div class="sum"><b id="adminTotal">—</b><small>حساب مدیریتی</small></div><div class="sum"><b id="adminActive">—</b><small>حساب فعال</small></div><div class="sum"><b id="adminOwner">1</b><small>مالک پنل</small></div></div>
+      </div>
+      <div class="card admin-directory" id="adminReqCard" style="margin-bottom:14px;display:none"><div class="panel-head"><div><b>درخواست‌های ثبت‌نام ادمینی</b><small>افرادی که از صفحه ورود درخواست همکاری داده‌اند؛ بررسی کن و تصمیم بگیر.</small></div><span class="command-badge" id="adminReqBadge">۰ درخواست</span></div><div id="adminReqBody" style="padding:14px 18px"></div></div>
+      <div class="card admin-directory"><div class="panel-head"><div><b>فهرست ادمین‌ها</b><small>وضعیت، دسترسی و فعالیت هر ادمین را از یکجا بررسی و مدیریت کن.</small></div><span class="directory-live"><i></i> کنترل فعال</span></div><div class="admin-grid" id="adminsBody"></div></div>
     </div>
 
     <!-- ACTIVITY -->
@@ -791,7 +1029,25 @@ body{background:radial-gradient(900px 500px at 75% -10%,rgba(124,92,255,.10),tra
           <div style="display:flex;gap:10px;align-items:center;margin-top:8px"><span class="status-dot off" id="botDot"></span><span id="botStatusText" style="font-size:13px">وضعیت نامشخص</span></div><div style="display:flex;gap:10px;margin-top:14px"><button class="btn primary" onclick="saveBotSettings()"><i class="ti ti-device-floppy"></i>ذخیره</button><button class="btn" id="botStartBtn" onclick="botStart()"><i class="ti ti-player-play"></i>شروع</button><button class="btn danger" id="botStopBtn" onclick="botStop()"><i class="ti ti-player-stop"></i>توقف</button></div>
         </div>
       </div>
-      <div class="card settings-card" style="margin-top:14px"><div class="section-title">Bot Text Studio</div><p class="hint">تمام پیام‌های کلیدی ربات را از همین پنل ویرایش کن؛ تغییرات روی ربات در اجرای بعدی/ری‌استارت اعمال می‌شوند.</p><div class="bot-text-grid"><div class="grp"><label>پیام خوش‌آمد</label><textarea id="botTxtWelcome" rows="4"></textarea></div><div class="grp"><label>منوی مدیریت</label><textarea id="botTxtAdmin" rows="4"></textarea></div><div class="grp"><label>پیام ساخت کانفیگ</label><textarea id="botTxtCreated" rows="3"></textarea></div></div><button class="btn primary" onclick="saveBotTexts()"><i class="ti ti-device-floppy"></i>ذخیره متن‌های ربات</button></div>
+      <div class="card settings-card tpl-studio" style="margin-top:14px">
+        <div class="tpl-studio-head"><div><div class="section-title">Subscription Template</div><p class="hint">همان یک لینک ساب که به کاربر می‌دهی؛ فقط تعیین کن نام کانفیگ داخل اپ او دقیقاً چه چیزهایی را نشان دهد.</p></div><div class="tpl-badge"><i class="ti ti-wand"></i>Template Studio</div></div>
+        <div class="tpl-grid">
+          <div class="tpl-fields">
+            <label class="tpl-row"><div class="tpl-row-main"><i class="ti ti-tag"></i><div><b>نام کانفیگ</b><small>نام دلخواه یا برند شما</small></div></div><input type="checkbox" class="tpl-switch" id="subTplName"></label>
+            <label class="tpl-row"><div class="tpl-row-main"><i class="ti ti-database"></i><div><b>حجم اختصاص‌یافته</b><small>مثلاً ۵۰ گیگابایت</small></div></div><input type="checkbox" class="tpl-switch" id="subTplVolume"></label>
+            <label class="tpl-row"><div class="tpl-row-main"><i class="ti ti-fingerprint"></i><div><b>شناسه کانفیگ (ID)</b><small>شناسه کوتاه یکتا</small></div></div><input type="checkbox" class="tpl-switch" id="subTplId"></label>
+            <label class="tpl-row"><div class="tpl-row-main"><i class="ti ti-router"></i><div><b>نام اینباند</b><small>نام اینباند مادر این کانفیگ</small></div></div><input type="checkbox" class="tpl-switch" id="subTplInbound"></label>
+          </div>
+          <div class="tpl-preview">
+            <div class="tpl-preview-label"><i class="ti ti-device-mobile"></i>پیش‌نمایش داخل اپ کاربر</div>
+            <div class="tpl-preview-row"><span class="tpl-preview-dot"></span><div class="tpl-preview-text" id="subTplPreview">MyConfig</div><span class="tpl-preview-proto">VLESS</span></div>
+            <p class="hint" style="margin-top:10px">ترتیب نمایش دقیقاً همین ترتیب بالاست؛ بین هر بخش یک خط جداکننده (|) قرار می‌گیرد.</p>
+          </div>
+        </div>
+        <button class="btn primary" style="margin-top:14px" onclick="saveSubTemplate()"><i class="ti ti-device-floppy"></i>ذخیره الگوی ساب</button>
+      </div>
+
+      <div class="card settings-card" style="margin-top:14px"><div class="section-title">Bot Text Studio</div><p class="hint">تمام پیام‌های کلیدی ربات را از همین پنل ویرایش کن؛ تغییرات روی ربات در اجرای بعدی/ری‌استارت اعمال می‌شوند.</p><div class="bot-text-grid"><div class="grp"><label>پیام خوش‌آمد</label><textarea id="botTxtWelcome" rows="4"></textarea></div><div class="grp"><label>منوی مدیریت</label><textarea id="botTxtAdmin" rows="4"></textarea></div><div class="grp"><label>پیام ساخت کانفیگ</label><textarea id="botTxtCreated" rows="3"></textarea></div><div class="grp"><label>پیام فروشگاه</label><textarea id="botTxtStore" rows="3"></textarea></div><div class="grp"><label>پیام پرداخت موفق</label><textarea id="botTxtPayment" rows="3"></textarea></div></div><button class="btn primary" onclick="saveBotTexts()"><i class="ti ti-device-floppy"></i>ذخیره متن‌های ربات</button></div>
 
       <div class="card advanced-settings" style="margin-top:14px"><div class="panel-head"><div><b>CONTROL CENTER PRO</b><small>ابزارهای حرفه‌ای برای شخصی‌سازی و نگهداری پنل</small></div><span class="badge green">PRO</span></div><div class="advanced-grid"><button class="pro-action" onclick="refreshOverview();toast('داده‌های زنده بروزرسانی شد ✓')"><i class="ti ti-activity-heartbeat"></i><b>Live Refresh</b><small>مانیتورینگ فوری منابع</small></button><button class="pro-action" onclick="loadSettings();toast('تنظیمات دوباره بارگذاری شد ✓')"><i class="ti ti-refresh"></i><b>Reload Settings</b><small>دریافت تنظیمات واقعی سرور</small></button><button class="pro-action" onclick="location.reload()"><i class="ti ti-reload"></i><b>Hard Reload</b><small>بارگذاری کامل رابط</small></button><button class="pro-action" onclick="navigator.clipboard?.writeText(location.origin);toast('دامنه پنل کپی شد ✓')"><i class="ti ti-world-copy"></i><b>Copy Panel URL</b><small>دامنه فعلی پنل</small></button></div></div>
     </div>
@@ -861,13 +1117,14 @@ document.querySelectorAll('.tab').forEach(t=>{
   t.addEventListener('click', ()=> gotoPage(t.dataset.pg));
 });
 function gotoPage(pg){
+  if(pg==='plans'){ openDrawer('پلن‌های فروش', `<div class=\"feature-lock\"><div class=\"feature-lock-icon\"><i class=\"ti ti-lock-star\"></i></div><h3>این بخش در حال توسعه است</h3><p>ماژول فروش اشتراک در نسخه‌های بعدی VodiWalker فعال خواهد شد. فعلاً مدیریت سرویس، اینباند، کلاینت و سابسکریپشن بدون وابستگی به فروش در دسترس است.</p><div class=\"feature-lock-note\"><i class=\"ti ti-sparkles\"></i> Coming in a future release</div></div>`, `<button class=\"btn\" style=\"flex:1\" onclick=\"closeDrawer()\"><i class=\"ti ti-check\"></i>متوجه شدم</button>`); return; }
   document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('on', t.dataset.pg===pg));
   document.querySelectorAll('.page').forEach(p=>p.classList.toggle('on', p.id==='pg-'+pg));
   CURRENT_PAGE = pg;
   updatePageTitle(pg);
   document.getElementById('app').classList.remove('sb-open');
-  const loaders = {overview:refreshOverview, links:loadLinks, categories:loadCategories, subgroups:loadSubGroups,
-    reports:loadReports, admins:loadAdmins, activity:loadActivity, messages:loadMessages, settings:()=>{loadSettings();loadDiagnostics();}};
+  const loaders = {overview:refreshOverview, links:loadLinks, clientmgr:loadClientManager, categories:loadCategories, subgroups:loadSubGroups,
+    reports:loadReports, admins:()=>{loadAdmins();loadAdminRequests();}, activity:loadActivity, messages:loadMessages, settings:()=>{loadSettings();loadDiagnostics();}};
   if(loaders[pg]) loaders[pg]();
 }
 
@@ -934,40 +1191,44 @@ function toggleSidebar(){
 var DASH_I18N = {
   fa: {
     dir:'rtl', brand:'VodiWalker',
-    nav_overview:'داشبورد', nav_links:'اینباندها', nav_categories:'دسته‌بندی‌ها', nav_subgroups:'گروه‌های ساب',
-    nav_reports:'گزارش‌ها', nav_admins:'ادمین‌ها', nav_activity:'فعالیت‌ها', nav_messages:'پیام‌ها', nav_settings:'تنظیمات',
-    pt_overview:'وضعیت لحظه‌ای سرویس و کانفیگ‌ها',
+    nav_overview:'داشبورد', nav_links:'اینباندها', nav_clientmgr:'ساخت کلاینت', nav_categories:'دسته‌بندی‌ها', nav_subgroups:'گروه‌های ساب',
+    nav_plans:'پلن‌های فروش', nav_reports:'گزارش‌ها', nav_admins:'ادمین‌ها', nav_activity:'فعالیت‌ها', nav_messages:'پیام‌ها', nav_settings:'تنظیمات',
+    pt_overview:'وضعیت لحظه‌ای سرویس، کانفیگ‌ها و ربات فروش',
     pt_links:'مدیریت حرفه‌ای اینباندها، کلاینت‌ها و لینک‌های اشتراک',
+    pt_clientmgr:'ساخت کلاینت واقعی از روی اینباند دلخواه، جدا از صفحه اینباندها',
     pt_categories:'پیش‌فرض‌های حجم، انقضا و محدودیت برای گروه‌های کانفیگ',
     pt_subgroups:'ترکیب چند کانفیگ در یک لینک اشتراک واحد',
-    pt_reports:'خلاصه‌ی عملکرد و مصرف کانفیگ‌ها',
+    pt_plans:'پلن‌هایی که در ربات فروش تلگرام نمایش داده می‌شوند',
+    pt_reports:'خلاصه‌ی عملکرد فروش و کانفیگ‌ها',
     pt_admins:'حساب‌های دسترسی جانبی به پنل (فقط مالک)',
     pt_activity:'۱۵۰ رویداد اخیر پنل',
     pt_messages:'مرکز خطاها، هشدارها و پیام‌های سیستم',
-    pt_settings:'آدرس عمومی پنل، ربات مدیریت تلگرام و رمز عبور'
+    pt_settings:'آدرس عمومی پنل، ربات فروش تلگرام و رمز عبور'
   },
   en: {
     dir:'ltr', brand:'VodiWalker',
-    nav_overview:'Overview', nav_links:'Inbounds', nav_categories:'Categories', nav_subgroups:'Sub Groups',
-    nav_reports:'Reports', nav_admins:'Admins', nav_activity:'Activity', nav_messages:'Messages', nav_settings:'Settings',
-    pt_overview:'Live status of the service and configs',
+    nav_overview:'Overview', nav_links:'Inbounds', nav_clientmgr:'Create Client', nav_categories:'Categories', nav_subgroups:'Sub Groups',
+    nav_plans:'Sale Plans', nav_reports:'Reports', nav_admins:'Admins', nav_activity:'Activity', nav_messages:'Messages', nav_settings:'Settings',
+    pt_overview:'Live status of the service, configs and sales bot',
     pt_links:'Manage inbounds, clients and subscription links',
+    pt_clientmgr:'Create a real client from any inbound, separate from the inbounds page',
     pt_categories:'Default traffic, expiry and IP-limit presets for config groups',
     pt_subgroups:'Combine several configs into one subscription link',
-    pt_reports:'Summary of config performance and usage',
+    pt_plans:'Plans shown in the Telegram sales bot',
+    pt_reports:'Summary of sales and config performance',
     pt_admins:'Secondary panel access accounts (owner only)',
     pt_activity:'Last 150 panel events',
     pt_messages:'Errors, warnings and system messages',
-    pt_settings:'Panel public URL, Telegram management bot and password'
+    pt_settings:'Panel public URL, Telegram sales bot and password'
   }
 };
 var CURRENT_PAGE = 'overview';
 const DASH_EN_TERMS = {
   // Navigation / pages
   'داشبورد':'Dashboard','اینباندها':'Inbounds','اینباند':'Inbound','دسته‌بندی‌ها':'Categories','دسته‌بندی':'Category',
-  'گروه‌های ساب':'Subscription Groups','گروه ساب':'Subscription Group','گروه جدید':'New Group',
+  'گروه‌های ساب':'Subscription Groups','گروه ساب':'Subscription Group','گروه جدید':'New Group','پلن‌های فروش':'Sales Plans','پلن فروش':'Sales Plan','پلن جدید':'New Plan',
   'گزارش‌ها':'Reports','ادمین‌ها':'Admins','ادمین':'Admin','ادمین جدید':'New Admin','مالک':'Owner','فعالیت‌ها':'Activity','فعالیت':'Activity','پیام‌ها':'Messages','تنظیمات':'Settings',
-  'مرکز کنترل':'Control Center','مرکز پیام و خطا':'Message & Error Center','مدیریت ادمین‌ها':'Admin Management','مدیریت ادمین':'Admin Management',
+  'مرکز کنترل':'Control Center','مرکز پیام و خطا':'Message & Error Center','مدیریت حساب‌ها':'Admin Management','مدیریت حساب':'Admin Management',
   'تنظیمات و استودیو ظاهر':'Settings & Appearance Studio','استودیو ظاهر':'Appearance Studio',
 
   // Common actions / states
@@ -999,25 +1260,25 @@ const DASH_EN_TERMS = {
   'ابزارهای حرفه‌ای برای شخصی‌سازی و نگهداری پنل':'Professional tools for panel personalization and maintenance',
 
   // Dashboard metrics
-  'کل اینباندها':'Total Inbounds','پرمصرف‌ترین کانفیگ‌های ۷ روز اخیر':'Top configs from the last 7 days',
+  'کل اینباندها':'Total Inbounds','مشتریان فروشگاه':'Store Customers','فروش (Stars)':'Sales (Stars)','پرمصرف‌ترین کانفیگ‌های ۷ روز اخیر':'Top configs from the last 7 days',
   'پرمصرف‌ترین کانفیگ‌ها':'Top Configs by Usage','خطاهای ثبت‌شده':'Recorded Errors','خطاهای Backend و Frontend با جزئیات مسیر و زمان':'Backend and frontend errors with route and time details',
   'رویدادهای مهم':'Important Events','آخرین فعالیت‌های پنل برای عیب‌یابی سریع':'Recent panel activity for quick troubleshooting',
-  'وضعیت سیستم':'System Status','سیستم سالم است.':'System is healthy.','خطای ثبت‌شده‌ای وجود ندارد. سیستم سالم است.':'No recorded errors. System is healthy.','رویدادی وجود ندارد.':'No events found.','لاگی وجود ندارد':'No activity logs.','داده‌ای موجود نیست':'No data available.','هنوز داده‌ی مصرفی ثبت نشده':'No usage data recorded yet.','کانفیگی یافت نشد':'No configs found.','گروهی وجود ندارد':'No groups found.',
+  'وضعیت سیستم':'System Status','سیستم سالم است.':'System is healthy.','خطای ثبت‌شده‌ای وجود ندارد. سیستم سالم است.':'No recorded errors. System is healthy.','رویدادی وجود ندارد.':'No events found.','لاگی وجود ندارد':'No activity logs.','داده‌ای موجود نیست':'No data available.','هنوز داده‌ی مصرفی ثبت نشده':'No usage data recorded yet.','کانفیگی یافت نشد':'No configs found.','گروهی وجود ندارد':'No groups found.','پلنی وجود ندارد':'No plans found.',
   'همگام‌سازی خودکار':'Auto Sync','آخرین بروزرسانی':'Last Updated','۳۰ روز اخیر':'Last 30 days','۱۴ روز اخیر':'Last 14 days','۷ روز اخیر':'Last 7 days',
   'در حال ذخیره...':'Saving...','تغییر امن رمز':'Change Password','تغییر نام کاربری':'Change Username','نام کاربری پنل':'Panel Username','نام کاربری جدید':'New Username','رمز عبور':'Password','رمز فعلی':'Current Password','رمز جدید':'New Password','تکرار رمز جدید':'Repeat New Password','تکرار رمز عبور':'Repeat Password','امنیت حساب':'Account Security',
-  'پیام خوش‌آمد':'Welcome Message','منوی مدیریت':'Admin Menu','پیام ساخت کانفیگ':'Config Created Message',
+  'پیام خوش‌آمد':'Welcome Message','منوی مدیریت':'Admin Menu','پیام ساخت کانفیگ':'Config Created Message','پیام فروشگاه':'Store Message','پیام پرداخت موفق':'Payment Success Message',
   'آدرس عمومی پنل':'Panel Public URL','دامنه فعلی پنل':'Current panel domain','ذخیره شد':'Saved','ذخیره شد ✓':'Saved ✓','ساخته شد':'Created','حذف شد':'Deleted','بروزرسانی شد':'Updated','کپی شد':'Copied','کپی شد ✓':'Copied ✓','تنظیمات دوباره بارگذاری شد ✓':'Settings reloaded ✓','داده‌های زنده بروزرسانی شد ✓':'Live data refreshed ✓','دامنه پنل کپی شد ✓':'Panel URL copied ✓','نام کاربری با موفقیت تغییر کرد ✓':'Username changed successfully ✓','رمز عبور با موفقیت تغییر کرد ✓':'Password changed successfully ✓',
 
   // Tables / forms
   'نام کاربری':'Username','نام':'Name','نام گروه':'Group Name','برچسب':'Label','نقش':'Role','وضعیت':'Status','زمان':'Time','نوع':'Type','پیام':'Message','تعداد':'Count','تعداد کانفیگ':'Config Count','لینک عمومی':'Public Link',
   'پروتکل':'Protocol','آدرس':'Address','آدرس / Domain':'Address / Domain','پورت':'Port','سرعت':'Speed','حجم':'Traffic','حجم مصرفی':'Usage','حجم پیش‌فرض (GB)':'Default Traffic (GB)','انقضا':'Expiry','انقضا (روز)':'Expiry (Days)','اعتبار (روز)':'Validity (Days)','زمان دقیق انقضا':'Exact Expiry','محدودیت IP':'IP Limit','Connection Limit':'Connection Limit','تعداد کاربر':'Client Limit','تعداد خروجی':'Output Count','توضیحات':'Description','یادداشت داخلی':'Internal Note',
-  'آخرین ورود':'Last Login','کل':'Total','روز':'Days','ساعت':'Hours','دقیقه':'Minutes','نامحدود':'Unlimited','پیش‌فرض':'Default','اختیاری':'Optional','اجباری':'Required','مصرف':'Usage','اتصال':'Connection','اتصالات':'Connections','کلاینت‌ها':'Clients','کلاینت':'Client',
+  'مدت':'Duration','قیمت (⭐)':'Price (⭐)','ویژه':'Featured','آخرین ورود':'Last Login','کل':'Total','روز':'Days','ساعت':'Hours','دقیقه':'Minutes','نامحدود':'Unlimited','پیش‌فرض':'Default','اختیاری':'Optional','اجباری':'Required','مصرف':'Usage','اتصال':'Connection','اتصالات':'Connections','کلاینت‌ها':'Clients','کلاینت':'Client','مشتریان':'Customers','مشتری‌ها':'Customers',
   'کپی VLESS':'Copy VLESS','اشتراک':'Subscription','مدیریت کلاینت‌های واقعی':'Real Client Manager','ساخت کلاینت واقعی':'Create Client','کنترل پنل':'Panel Control','مدیریت ربات':'Bot Management','ربات':'Bot',
 
   // Inbound builder
   'ساخت اینباند':'Create Inbound','ویرایش اینباند':'Edit Inbound','ساخت کلاینت':'Create Client','ویرایش کلاینت':'Edit Client','انتخاب پروتکل':'Select Protocol','پروتکل پایه':'Base Protocol','انتقال':'Transport','لایه انتقال':'Transport Layer','امنیت':'Security','تنظیمات اتصال':'Connection Settings','تنظیمات پیشرفته':'Advanced Settings','خلاصه':'Summary','قبل از ذخیره ترکیب نهایی را بررسی کن':'Review the final combination before saving',
   'ترکیب نهایی':'Final Combination','شبکه':'Network','روش رمزنگاری':'Encryption Method','رمز / Secret':'Password / Secret','کلید عمومی':'Public Key','شناسه کوتاه':'Short ID','مسیر Spider':'Spider X','تولید کلید Reality':'Generate Reality Keypair','تست پینگ':'Ping Test','در حال تست':'Testing...','ابتدا آدرس یا دامنه را وارد کنید':'Enter an address or domain first','پورت نامعتبر است':'Invalid port','اتصال برقرار نشد':'Connection failed',
-  'این ترکیب توسط هسته فعلی پنل پشتیبانی می‌شود.':'This combination is supported by the current panel core.','این ترکیب فقط لینک می‌سازد؛ برای سرو واقعی به Xray-core / نود خارجی نیاز است.':'This combination only generates links; a real service requires Xray-core / an external node.','Shadowsocks به‌صورت TCP-only در این Builder ارائه می‌شود.':'Shadowsocks is provided as TCP-only in this builder.','Transport فقط مسیر انتقال است و جدا از پروتکل پایه انتخاب می‌شود.':'Transport is only the transfer layer and is selected separately from the base protocol.',
+  'این ترکیب آماده استفاده است.':'This combination is ready to use.','این ترکیب برای ساخت لینک و مدیریت سرویس آماده شده است.':'This combination is prepared for link and service management.','Shadowsocks به‌صورت TCP-only در این Builder ارائه می‌شود.':'Shadowsocks is provided as TCP-only in this builder.','Transport فقط مسیر انتقال است و جدا از پروتکل پایه انتخاب می‌شود.':'Transport is only the transfer layer and is selected separately from the base protocol.',
   'VLESS':'VLESS','VMess':'VMess','Trojan':'Trojan','Shadowsocks':'Shadowsocks','TCP':'TCP','WebSocket':'WebSocket','WS':'WebSocket','gRPC':'gRPC','XHTTP':'XHTTP','TLS':'TLS','Reality':'Reality','None':'None','امنیت بدون رمزنگاری':'No encryption','بدون رمزنگاری':'No encryption',
 
   // Settings / appearance
@@ -1031,7 +1292,11 @@ const DASH_EN_TERMS = {
 
   // Railway / service
   'دامنه عمومی Railway وارد شد؛ برای TCP خام باید TCP Proxy فعال باشد':'Railway public domain loaded; raw TCP requires TCP Proxy.','اطلاعات TCP Proxy ریل‌وی در این سرویس پیدا نشد':'Railway TCP Proxy information was not found for this service.',
-  'همه دسته‌ها':'All categories','مورد انتخاب شده':'selected','اینباند جدید':'New Inbound','دسته جدید':'New Category','وضعیت':'Status','آدرس':'Address','ترافیک':'Traffic','کلاینت / اتصال':'Client / Connection','عملیات':'Actions','نام گروه':'Group Name','تعداد کانفیگ':'Config Count','لینک عمومی':'Public Link','حجم پیش‌فرض':'Default Traffic','خروجی CSV':'CSV Export','برچسب':'Label','مدیریت ادمین‌ها':'Admin Management','ادمین جدید':'New Admin','نقش':'Role','آخرین ورود':'Last Login','مرکز پیام و خطا':'Message & Error Center','پاک‌کردن خطاها':'Clear Errors','خطاهای ثبت‌شده':'Recorded Errors','خطاهای Backend و Frontend با جزئیات مسیر و زمان':'Backend and frontend errors with route and time details','همه':'All','هشدار':'Warning','مرورگر':'Browser','بازنشانی ظاهر':'Reset Appearance','اندازه متن':'Text Size','تراکم پنل':'Panel Density','گوشه‌ها':'Corners','پوسته':'Theme','رنگ اصلی':'Accent Color','انیمیشن‌های پنل':'Panel Animations','سایدبار باز در دسکتاپ':'Open sidebar on desktop','Glow / نورپردازی':'Glow / Lighting','امنیت حساب':'Account Security','رمز فعلی':'Current Password','رمز جدید':'New Password','تکرار رمز جدید':'Repeat New Password','تغییر امن رمز':'Change Password','لغو نشست‌های قبلی':'Revoke Previous Sessions','توقف':'Stop','منوی مدیریت':'Admin Menu','پیام ساخت کانفیگ':'Config Created Message','مانیتورینگ فوری منابع':'Instant resource monitoring','دریافت تنظیمات واقعی سرور':'Load real server settings','بارگذاری کامل رابط':'Hard Reload','دامنه فعلی پنل':'Current panel domain','در حال دریافت...':'Loading...','بروزرسانی':'Refresh','ساخت سریع':'Quick Create','کانفیگی یافت نشد':'No configs found','دسته‌بندی‌ها':'Categories','گروه‌های ساب':'Subscription Groups','ادمین‌ها':'Admins','پیام‌ها':'Messages','تنظیمات':'Settings',
+  'همه دسته‌ها':'All categories','مورد انتخاب شده':'selected','اینباند جدید':'New Inbound','دسته جدید':'New Category','وضعیت':'Status','آدرس':'Address','ترافیک':'Traffic','کلاینت / اتصال':'Client / Connection','عملیات':'Actions','نام گروه':'Group Name','تعداد کانفیگ':'Config Count','لینک عمومی':'Public Link','حجم پیش‌فرض':'Default Traffic','قیمت (⭐)':'Price (⭐)','خروجی CSV':'CSV Export','برچسب':'Label','مدیریت حساب‌ها':'Admin Management','ادمین جدید':'New Admin','نقش':'Role','آخرین ورود':'Last Login','مرکز پیام و خطا':'Message & Error Center','پاک‌کردن خطاها':'Clear Errors','خطاهای ثبت‌شده':'Recorded Errors','خطاهای Backend و Frontend با جزئیات مسیر و زمان':'Backend and frontend errors with route and time details','همه':'All','هشدار':'Warning','مرورگر':'Browser','بازنشانی ظاهر':'Reset Appearance','اندازه متن':'Text Size','تراکم پنل':'Panel Density','گوشه‌ها':'Corners','پوسته':'Theme','رنگ اصلی':'Accent Color','انیمیشن‌های پنل':'Panel Animations','سایدبار باز در دسکتاپ':'Open sidebar on desktop','Glow / نورپردازی':'Glow / Lighting','امنیت حساب':'Account Security','رمز فعلی':'Current Password','رمز جدید':'New Password','تکرار رمز جدید':'Repeat New Password','تغییر امن رمز':'Change Password','لغو نشست‌های قبلی':'Revoke Previous Sessions','توقف':'Stop','منوی مدیریت':'Admin Menu','پیام ساخت کانفیگ':'Config Created Message','پیام فروشگاه':'Store Message','پیام پرداخت موفق':'Payment Success Message','مانیتورینگ فوری منابع':'Instant resource monitoring','دریافت تنظیمات واقعی سرور':'Load real server settings','بارگذاری کامل رابط':'Hard Reload','دامنه فعلی پنل':'Current panel domain','در حال دریافت...':'Loading...','بروزرسانی':'Refresh','ساخت سریع':'Quick Create','کانفیگی یافت نشد':'No configs found','دسته‌بندی‌ها':'Categories','پلن‌های فروش':'Sales Plans','گروه‌های ساب':'Subscription Groups','ادمین‌ها':'Admins','پیام‌ها':'Messages','تنظیمات':'Settings',
+
+  // --- Added: fill remaining gaps found across dashboard toasts, confirm()
+  // dialogs, inbound builder, client manager and admin permission matrix ---
+  'اینباند حذف شود؟':'inbound(s) be deleted?','این کلاینت حذف شود؟':'Delete this client?','این کانفیگ حذف شود؟':'Delete this config?','این دسته حذف شود؟':'Delete this category?','این گروه حذف شود؟':'Delete this group?','این پلن حذف شود؟':'Delete this plan?','این ادمین حذف شود؟':'Delete this admin?','همه خطاهای ثبت‌شده پاک شوند؟':'Clear all recorded errors?','همه نشست‌های قبلی این حساب لغو شوند؟':'Revoke all previous sessions for this account?','دسته‌بندی‌ای وجود ندارد':'No categories found','بروزرسانی گروهی انجام شد':'Bulk update completed','حذف گروهی انجام شد':'Bulk delete completed','کانفیگ خودکار ساخته شد':'Auto config created','اینباند بروزرسانی شد':'Inbound updated','اینباند با موفقیت ساخته شد':'Inbound created successfully','خطا در ذخیره اینباند':'Error saving inbound','خطا در دریافت اطلاعات Railway':'Error fetching Railway information','کلاینت واقعی ساخته شد ✓':'Client created ✓','متن‌های ربات ذخیره شد ✓':'Bot texts saved ✓','خطاها پاک شدند ✓':'Errors cleared ✓','ذخیره شد و ربات با تنظیمات جدید ری‌استارت شد':'Saved — the bot restarted with the new settings','ذخیره شد — برای اعمال، ربات را روشن کنید':'Saved — turn the bot on to apply the changes','کلید Reality ساخته شد. Private Key را روی نود خودتان نگه دارید.':'Reality keypair generated. Keep the private key on your own node.','پورت باید بین 1 تا 65535 باشد':'Port must be between 1 and 65535','Shadowsocks فقط با TCP ساخته می‌شود':'Shadowsocks can only be created over TCP','رمز جدید باید حداقل ۸ کاراکتر باشد':'New password must be at least 8 characters','رمز جدید باید با رمز فعلی متفاوت باشد':'New password must be different from the current password','تکرار رمز یکسان نیست':'Password confirmation does not match','همه‌ی فیلدهای رمز عبور را پر کنید':'Please fill in all password fields','نام کاربری باید ۳ تا ۴۰ کاراکتر و بدون فاصله باشد':'Username must be 3–40 characters with no spaces','نام کاربری را وارد کنید':'Please enter a username','هر کلاینت UUID مستقل دارد و برای پروتکل‌های Live مستقیماً توسط Relay قابل احراز است.':'Each client has its own UUID and, for Live protocols, is authenticated directly by the relay.','این اینباند فعلاً فقط لینک تولید می‌کند. برای Client واقعی، ابتدا یک ترکیب Live مثل VLESS + WS/TCP/XHTTP انتخاب کنید.':'This inbound currently only generates links. For a real client, first choose a Live combination such as VLESS + WS/TCP/XHTTP.','مدیریت کلاینت‌ها':'Manage Clients','حجم (GB، خالی = والد)':'Traffic (GB, empty = parent)','انقضا (روز، 0 = والد)':'Expiry (days, 0 = parent)','بدون تغییر خالی بگذار':'Leave empty for no change','والد':'parent','ساخت اینباند حرفه‌ای':'Create Professional Inbound','پروتکل پایه، ترنسپورت و امنیت کاملاً تفکیک‌شده':'Base protocol, transport and security are fully separated','اول مشخص کن با چه پروتکلی کانفیگ ساخته شود':'First decide which protocol the config will use','حالا مسیر انتقال را جداگانه انتخاب کن':'Now choose the transport layer separately','TLS / Reality / None را مستقل از ترنسپورت انتخاب کن':'Choose TLS / Reality / None independently of the transport','فقط فیلدهای مرتبط با انتخاب بالا نمایش داده می‌شوند':'Only fields relevant to the selection above are shown','لینک اشتراک':'Subscription Link','اگر این لینک برای مشتری باز نمی‌شود، ابتدا از تب «تنظیمات» آدرس عمومی پنل را درست تنظیم کنید.':'If this link doesn\'t open for the customer, first set the panel\'s public URL correctly under the “Settings” tab.','دسته':'Category','گروه ساب جدید':'New Subscription Group','پلن':'Plan','پیشنهاد ویژه':'Featured offer','در حال اتصال':'Connecting','غیرفعال/منقضی':'Disabled/Expired','فعال - بدون اتصال':'Active – No connection','منقضی شده':'Expired','روز مانده':'days left','بدون انقضا':'No expiry','اتصال زنده':'Live connections','کل کانفیگ‌ها':'Total Configs','تعداد سفارش':'Order Count','ساخت و مدیریت اینباند':'Create & manage inbounds','سابسکریپشن':'Subscription','پیام‌ها و خطاها':'Messages & Errors','اینباند و کلاینت':'Inbounds & Clients','هشدارهای اخیر':'Recent Warnings','خطاهای مرورگر':'Browser Errors','خطای نامشخص':'Unknown error','سرور TCP روی پورت داخلی':'TCP server on internal port','گوش می‌دهد — این را در Railway به همین پورت داخلی متصل کن، نه به':'is listening — in Railway, point this at the same internal port, not at the main HTTP','مثلاً':'e.g.','اصلی':'main','همه‌ی اینباندها بروزرسانی شدند ✓':'All inbounds refreshed ✓','بروزرسانی همه':'Refresh All','الگوی نام کانفیگ‌های ساب ذخیره شد ✓':'Subscription remark template saved ✓','نام کانفیگ':'Config Name','حجم اختصاص‌یافته':'Assigned Traffic','شناسه کانفیگ (ID)':'Config ID','نام اینباند':'Inbound Name','پیش‌نمایش: ':'Preview: ','همان یک لینک ساب که به کاربر می‌دهی؛ فقط تعیین کن نام کانفیگ داخل اپ او دقیقاً چه چیزهایی را نشان دهد.':'It\'s still the same single subscription link you hand out — just choose exactly what shows in the config name inside their app.','ذخیره الگوی ساب':'Save Template','Subscription Template':'Subscription Template'
 };
 
 // ============================================================
@@ -1049,13 +1314,49 @@ const DASH_TERM_LIST = Object.keys(DASH_EN_TERMS).sort((a,b)=>b.length-a.length)
 const DASH_TRANSLATABLE_ATTRS = ['placeholder','title','aria-label'];
 let DASH_TRANSLATING = false;
 
+// Word-safe substring replace: a term is only replaced when the character
+// right before/after it is NOT another Persian letter. Without this guard a
+// short dictionary entry like 'کل' ("total") would also match *inside* an
+// unrelated word such as 'کلید' ("key") -> 'Totalید', silently corrupting
+// text that has nothing to do with the term. Persian suffixes attached with
+// a ZWNJ (e.g. 'کلاینت‌ها') still match correctly because \u200c is not a
+// Persian letter and is left outside this guard.
+const DASH_FA_LETTER_RE = /[\u0600-\u06FF]/;
+function dashReplaceTermSafely(out, term, replacement){
+  if(!out.includes(term)) return out;
+  let result = '';
+  let i = 0;
+  const len = term.length;
+  while(i < out.length){
+    if(out.startsWith(term, i)){
+      const before = i > 0 ? out[i - 1] : '';
+      const after = out[i + len] || '';
+      if(!DASH_FA_LETTER_RE.test(before) && !DASH_FA_LETTER_RE.test(after)){
+        result += replacement;
+        i += len;
+        continue;
+      }
+    }
+    result += out[i];
+    i++;
+  }
+  return result;
+}
+
 function dashTranslateValue(value, lang){
   if(lang !== 'en' || !value) return value || '';
   let out = String(value);
   for(const term of DASH_TERM_LIST){
-    if(out.includes(term)) out = out.split(term).join(DASH_EN_TERMS[term]);
+    out = dashReplaceTermSafely(out, term, DASH_EN_TERMS[term]);
   }
   return out;
+}
+
+// Shorthand for one-off strings that never live in the DOM long enough for
+// the tree-walker/observer to reach them — native confirm()/prompt() dialogs
+// in particular. Translates against the current dashboard language.
+function t(fa){
+  return dashTranslateValue(fa, typeof getDashLang === 'function' ? getDashLang() : 'fa');
 }
 
 function dashShouldTranslateElement(el){
@@ -1200,6 +1501,11 @@ async function boot(){
     if(me.admin.role !== 'owner'){
       document.querySelector('.tab[data-pg="admins"]').style.display='none';
       document.querySelector('.tab[data-pg="settings"]').style.display='none';
+      if(!(me.admin.permissions||[]).includes('clients')){
+        document.querySelector('.tab[data-pg="clientmgr"]').style.display='none';
+      }
+    } else {
+      loadAdminRequests();
     }
   }catch(e){ location.href='/login'; return; }
   try{ const p = await api('/api/protocols'); PROTOCOLS = p.protocols||[]; MANUAL_META = p.manual||{}; }catch(e){}
@@ -1231,8 +1537,8 @@ async function refreshOverview(){
     $('ovBizStats').innerHTML = `
       <div><i class="ti ti-network"></i><span><b>${t.links||0}</b><small>کل اینباندها</small></span></div>
       <div><i class="ti ti-circle-check"></i><span><b>${t.active_links||0}</b><small>فعال</small></span></div>
-      <div><i class="ti ti-clock-x"></i><span><b>${t.expired_links||0}</b><small>منقضی</small></span></div>
-      <div><i class="ti ti-folders"></i><span><b>${t.subs||0}</b><small>گروه‌های ساب</small></span></div>`;
+      <div><i class="ti ti-users"></i><span><b>${t.customers||0}</b><small>مشتریان فروشگاه</small></span></div>
+      <div><i class="ti ti-star"></i><span><b>${t.stars||0}</b><small>فروش (Stars) · ${t.orders||0} سفارش</small></span></div>`;
     const top = (rep.top_links||[]).slice(0,6);
     if(!top.length){
       $('ovTopLinks').innerHTML = '<div class="ov-empty">هنوز داده‌ی مصرفی ثبت نشده</div>';
@@ -1258,7 +1564,13 @@ async function refreshTelemetry(){
     $('storageVal').textContent=t.storage.percent+'%'; $('storageSub').textContent=fmtBytes(t.storage.used)+' / '+fmtBytes(t.storage.total);
     $('txRate').textContent=fmtBytes(t.network.tx_bps)+'/s'; $('rxRate').textContent=fmtBytes(t.network.rx_bps)+'/s'; $('liveRate').textContent='↑ '+fmtBytes(t.network.tx_bps)+'/s ↓ '+fmtBytes(t.network.rx_bps)+'/s';
     $('connVal').textContent=t.connections; $('reqVal').textContent=t.requests; $('errVal').textContent=t.errors; $('uptimeVal').textContent=t.uptime; $('coresVal').textContent=t.cpu_cores; $('procRamVal').textContent=fmtBytes(t.process.rss); $('loadVal').textContent=(t.load||[]).join('  '); $('sentTotal').textContent=fmtBytes(t.network.bytes_sent); $('recvTotal').textContent=fmtBytes(t.network.bytes_recv);
-    pushSeries(TEL.cpu,t.cpu);pushSeries(TEL.ram,t.ram.percent);pushSeries(TEL.swap,t.swap.percent);pushSeries(TEL.storage,t.storage.percent);pushSeries(TEL.traffic,(t.network.tx_bps+t.network.rx_bps));pushSeries(TEL.conn,t.connections);
+    const hist=Array.isArray(t.history)?t.history:[];
+    if(hist.length){
+      TEL.cpu=hist.map(x=>Number(x.cpu)||0); TEL.ram=hist.map(x=>Number(x.ram)||0); TEL.swap=hist.map(x=>Number(x.swap)||0); TEL.storage=hist.map(x=>Number(x.storage)||0);
+      TEL.traffic=hist.map(x=>(Number(x.tx_bps)||0)+(Number(x.rx_bps)||0)); TEL.conn=hist.map(x=>Number(x.connections)||0);
+    }else{
+      pushSeries(TEL.cpu,t.cpu);pushSeries(TEL.ram,t.ram.percent);pushSeries(TEL.swap,t.swap.percent);pushSeries(TEL.storage,t.storage.percent);pushSeries(TEL.traffic,(t.network.tx_bps+t.network.rx_bps));pushSeries(TEL.conn,t.connections);
+    }
     drawSpark('cpuSpark',TEL.cpu);drawSpark('ramSpark',TEL.ram);drawSpark('swapSpark',TEL.swap);drawSpark('storageSpark',TEL.storage);drawChart('trafficChart',TEL.traffic);drawChart('connChart',TEL.conn);
   }catch(e){}
 }
@@ -1290,23 +1602,10 @@ function statusBadge(l){
 // ============================================================
 async function loadLinks(silent){
   try{
-    const [linksRes, catsRes, inboundsRes] = await Promise.all([api('/api/links'), api('/api/categories'), api('/api/inbounds').catch(()=>null)]);
+    const [linksRes, catsRes] = await Promise.all([api('/api/links'), api('/api/categories')]);
     const selectedBefore = silent ? selectedLinkUuids() : [];
     LINKS = linksRes.links || [];
     CATEGORIES = catsRes.categories || [];
-    if(inboundsRes && inboundsRes.inbounds){
-      const statsByUid = {};
-      inboundsRes.inbounds.forEach(ib=>{ statsByUid[ib.uuid] = ib; });
-      LINKS.forEach(l=>{
-        const st = statsByUid[l.uuid];
-        if(st){
-          l.active_client_count = st.active_client_count;
-          l.expired_client_count = st.expired_client_count;
-          l.client_total_used_bytes = st.client_total_used_bytes;
-          l.client_total_used_fmt = st.client_total_used_fmt;
-        }
-      });
-    }
     const sel = $('linkFilterCat');
     const prevCatVal = sel.value;
     sel.innerHTML = '<option value="">همه دسته‌ها</option>' + CATEGORIES.map(c=>`<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
@@ -1321,6 +1620,17 @@ async function loadLinks(silent){
   }catch(e){ if(!silent) toast(e.message, false); }
 }
 let linksTimer=setInterval(()=>{if(!document.hidden && CURRENT_PAGE==='links') loadLinks(true)},12000);
+async function refreshAllInbounds(){
+  const btn=$('ibRefreshBtn'), icon=$('ibRefreshIcon');
+  if(btn) btn.disabled=true;
+  if(icon) icon.classList.add('spin');
+  try{
+    await loadLinks();
+    await refreshOverview();
+    toast('همه‌ی اینباندها بروزرسانی شدند ✓');
+  }catch(e){ toast(e.message, false); }
+  finally{ if(btn) btn.disabled=false; if(icon) icon.classList.remove('spin'); }
+}
 function renderQuickStats(list){
   const total=list.length, active=list.filter(l=>l.active && !l.expired).length, live=list.filter(l=>l.live_status==='live').length, clients=list.reduce((s,l)=>s+Number(l.client_count||0),0);
   $('ibQuickStats').innerHTML = `
@@ -1329,31 +1639,48 @@ function renderQuickStats(list){
     <div><i class="ti ti-bolt"></i><span><b>${live}</b><small>LIVE</small></span></div>
     <div><i class="ti ti-users"></i><span><b>${clients}</b><small>کل کلاینت‌ها</small></span></div>`;
 }
-function ibRowHtml(l){
+function ibCardHtml(l){
   const pct=l.limit_bytes>0?Math.min(100,Math.round((l.used_bytes/l.limit_bytes)*100)):0; const port=l.port||443;
   const pctClass = pct>=90?'crit':(pct>=70?'warn':'');
   const isLive = l.live_status==='live';
   const daysLeft = l.expires_at ? Math.ceil((new Date(l.expires_at).getTime()-Date.now())/86400000) : null;
   const expClass = l.expired ? 'expired' : (daysLeft!==null && daysLeft<=3 ? 'soon' : '');
   const expSub = l.expires_at ? (l.expired ? 'منقضی شده' : (daysLeft!==null ? daysLeft+' روز مانده' : '')) : 'بدون انقضا';
-  return `<tr class="${l.active?'':'ib-row-off'}" data-uid="${l.uuid}">
-    <td><input type="checkbox" class="ib-check ib-row-check" data-uid="${l.uuid}" onchange="updateLinksBulkBar()"></td>
-    <td><div style="display:flex;align-items:center;gap:6px"><button class="ib-switch ${l.active?'on':''}" title="فعال/غیرفعال" onclick="toggleLink('${l.uuid}', ${!l.active})"></button><span class="ib-status-dot ${l.status_color||'gray'}" title="${l.status_color==='green'?'در حال اتصال':(l.status_color==='red'?'غیرفعال/منقضی':'فعال - بدون اتصال')}"></span></div></td>
-    <td><div class="ib-namecell">
+  return `<article class="ib-card ${l.active?'':'ib-off'}" data-uid="${l.uuid}">
+    <label class="ib-card-check"><input type="checkbox" class="ib-check ib-row-check" data-uid="${l.uuid}" onchange="updateLinksBulkBar()"></label>
+    <div class="ib-card-head">
+      <div class="ib-avatar"><i class="ti ti-router"></i></div>
+      <div class="ib-card-id">
         <div class="ib-name-top"><b title="${escapeHtml(l.label||'Unnamed Inbound')}">${escapeHtml(l.label||'Unnamed Inbound')}</b>${l.expired?'<span class="badge red">منقضی</span>':''}</div>
         <div class="mono">${escapeHtml((l.uuid||'').slice(0,18))}…</div>
-        <div class="ib-tagrow"><span>${protoLabel(l)}</span><span>${l.network||'tcp'}/${l.security||'none'}</span>${isLive?'<span class="ib-live-tag"><i></i>LIVE</span>':'<span class="ib-linkonly-tag">LINK-ONLY</span>'}</div>
-      </div></td>
-    <td><span class="mono ib-addr">${escapeHtml(l.address||'0.0.0.0')}:${port}</span><br><span style="font-size:9px;color:var(--sub2)">${escapeHtml(l.category_name||'بدون دسته')}</span></td>
-    <td><div class="ib-traffic-cell"><b style="font-size:11px">${fmtBytes(l.used_bytes||0)}${l.limit_bytes>0?' / '+fmtBytes(l.limit_bytes):' / ∞'}</b><div class="ib-progress"><i class="${pctClass}" style="width:${pct}%"></i></div></div></td>
-    <td><div class="ib-clientcell"><button class="iconbtn" title="مدیریت کلاینت‌ها" onclick="openClients('${l.uuid}')"><i class="ti ti-users"></i></button><span>${Number(l.client_count||0)} کلاینت</span></div><div style="font-size:9px;color:var(--sub2);margin-top:4px">اتصال زنده: ${Number(l.connected_ips||0)} / ${Number(l.connection_limit||0)||'∞'} · IP: ${Number(l.ip_limit||0)||'∞'}</div>${Number(l.client_count||0)>0?`<div style="font-size:9px;color:var(--sub2);margin-top:2px">فعال: ${Number(l.active_client_count||0)} · منقضی: ${Number(l.expired_client_count||0)} · مصرف کلاینت‌ها: ${escapeHtml(l.client_total_used_fmt||'0 B')}</div>`:''}</td>
-    <td><div class="ib-exp-cell"><b class="${expClass}">${l.expires_at?escapeHtml(l.expires_at.slice(0,10)):'∞'}</b><small>${expSub}</small></div></td>
-    <td><div class="ib-actioncell">
+      </div>
+      <div class="ib-card-controls">
+        <button class="ib-switch ${l.active?'on':''}" title="فعال/غیرفعال" onclick="toggleLink('${l.uuid}', ${!l.active})"></button>
+        <span class="ib-status-dot ${l.status_color||'gray'}" title="${l.status_color==='green'?'در حال اتصال':(l.status_color==='red'?'غیرفعال/منقضی':'فعال - بدون اتصال')}"></span>
+      </div>
+    </div>
+    <div class="ib-tagrow"><span>${protoLabel(l)}</span><span>${l.network||'tcp'}/${l.security||'none'}</span>${isLive?'<span class="ib-live-tag"><i></i>LIVE</span>':'<span class="ib-linkonly-tag">LINK-ONLY</span>'}<span>${escapeHtml(l.category_name||'بدون دسته')}</span></div>
+    <div class="ib-card-addr"><span class="mono">${escapeHtml(l.address||'0.0.0.0')}:${port}</span><small>${expSub}</small></div>
+    <div class="ib-card-traffic">
+      <div class="ib-tf-top"><span>مصرف</span><b>${fmtBytes(l.used_bytes||0)}${l.limit_bytes>0?' / '+fmtBytes(l.limit_bytes):' / ∞'}</b></div>
+      <div class="ib-progress"><i class="${pctClass}" style="width:${pct}%"></i></div>
+    </div>
+    <div class="ib-card-stats">
+      <div><small>کلاینت</small><b>${Number(l.client_count||0)}</b></div>
+      <div><small>اتصال</small><b>${Number(l.connected_ips||0)}/${Number(l.connection_limit||0)||'∞'}</b></div>
+      <div><small>انقضا</small><b class="${expClass}">${l.expires_at?escapeHtml(l.expires_at.slice(0,10)):'∞'}</b></div>
+    </div>
+    <div class="ib-card-foot">
+      <div class="ib-clientcell"><button class="iconbtn" title="مدیریت کلاینت‌ها" onclick="openClients('${l.uuid}')"><i class="ti ti-users"></i></button><span>مدیریت کلاینت</span></div>
+      <div class="ib-card-actions">
         <button class="iconbtn" title="اشتراک" onclick="showSubLink('${l.uuid}')"><i class="ti ti-qrcode"></i></button>
         <button class="iconbtn" title="ویرایش" onclick="openLinkDrawer('${l.uuid}')"><i class="ti ti-pencil"></i></button>
+        <button class="iconbtn" title="تعویض لینک (UUID جدید)" onclick="regenerateLink('${l.uuid}')"><i class="ti ti-replace"></i></button>
+        <button class="iconbtn" title="ریست حجم مصرفی" onclick="resetLinkUsage('${l.uuid}')"><i class="ti ti-refresh"></i></button>
         <button class="iconbtn" title="حذف" onclick="deleteLink('${l.uuid}')"><i class="ti ti-trash" style="color:var(--bad)"></i></button>
-      </div></td>
-  </tr>`;
+      </div>
+    </div>
+  </article>`;
 }
 function renderLinks(){
   const q = ($('linkSearch').value||'').toLowerCase(); const cat = $('linkFilterCat').value;
@@ -1361,7 +1688,8 @@ function renderLinks(){
   renderQuickStats(all);
   const filtered = all.filter(l=>{ if(cat && String(l.category_id)!==String(cat)) return false; if(q && !(`${l.label||''} ${l.uuid||''} ${l.protocol||''}`).toLowerCase().includes(q)) return false; return true; });
   $('linksEmpty').style.display = filtered.length ? 'none' : 'block';
-  $('linksBody').innerHTML = filtered.map(ibRowHtml).join('');
+  $('ibGrid').innerHTML = filtered.map(ibCardHtml).join('');
+  if($('ibCountLabel')) $('ibCountLabel').textContent = `${filtered.length} اینباند`;
   updateLinksBulkBar();
 }
 function toggleAllLinks(checked){
@@ -1377,6 +1705,10 @@ function updateLinksBulkBar(){
   if($('ibSelCount')) $('ibSelCount').textContent = sel.length;
   const all = document.querySelectorAll('.ib-row-check');
   if($('ibSelAll')) $('ibSelAll').checked = all.length>0 && sel.length===all.length;
+  document.querySelectorAll('.ib-card').forEach(card=>{
+    const cb = card.querySelector('.ib-row-check');
+    card.classList.toggle('ib-selected', !!(cb && cb.checked));
+  });
 }
 async function bulkToggleLinks(active){
   const sel = selectedLinkUuids(); if(!sel.length) return;
@@ -1385,7 +1717,7 @@ async function bulkToggleLinks(active){
 }
 async function bulkDeleteLinks(){
   const sel = selectedLinkUuids(); if(!sel.length) return;
-  if(!confirm(`${sel.length} اینباند حذف شود؟`)) return;
+  if(!confirm(`${sel.length} ${t('اینباند حذف شود؟')}`)) return;
   try{ await Promise.all(sel.map(uid=>api(`/api/links/${uid}`, {method:'DELETE'}))); toast('حذف گروهی انجام شد'); loadLinks(); }
   catch(e){ toast(e.message, false); }
 }
@@ -1399,7 +1731,7 @@ async function openClients(uid){
         <div class="client-hero"><div><b>مدیریت کلاینت‌های واقعی</b><small>هر کلاینت UUID مستقل دارد و برای پروتکل‌های Live مستقیماً توسط Relay قابل احراز است.</small></div><span class="badge ${inbound.live_status==='live'?'green':'red'}">${inbound.live_status==='live'?'LIVE':'LINK-ONLY'}</span></div>
         ${inbound.live_status!=='live'?`<div class="notice danger-note">این اینباند فعلاً فقط لینک تولید می‌کند. برای Client واقعی، ابتدا یک ترکیب Live مثل VLESS + WS/TCP/XHTTP انتخاب کنید.</div>`:''}
         <div class="client-create"><div class="grp"><label>نام کلاینت</label><input id="clientName" placeholder="مثلاً iPhone · User 01"></div><div class="row2"><div class="grp"><label>حجم (GB، خالی = والد)</label><input id="clientLimit" type="number" min="0" placeholder="0"></div><div class="grp"><label>انقضا (روز، 0 = والد)</label><input id="clientDays" type="number" min="0" placeholder="0"></div></div><button class="btn primary" style="width:100%" onclick="createClient('${uid}')"><i class="ti ti-user-plus"></i>ساخت کلاینت واقعی</button></div>
-        <div class="client-list">${clients.length?clients.map(c=>`<article class="client-row"><div class="client-avatar"><i class="ti ti-device-laptop"></i></div><div class="client-main"><b>${escapeHtml(c.label||'Client')}</b><small class="mono">${escapeHtml(c.uuid)}</small><div class="client-tags"><span>${c.active?'فعال':'خاموش'}</span><span>${fmtBytes(c.used_bytes||0)}${c.limit_bytes?' / '+fmtBytes(c.limit_bytes):''}</span><span>${c.expires_at?escapeHtml(c.expires_at.slice(0,10)):'∞'}</span></div></div><div class="client-actions"><button class="iconbtn" title="کپی VLESS" onclick="copyText(${JSON.stringify(c.vless_full||'')})"><i class="ti ti-copy"></i></button><button class="iconbtn" title="حذف" onclick="deleteClient('${uid}','${c.uuid}')"><i class="ti ti-trash" style="color:var(--bad)"></i></button></div></article>`).join(''):'<div class="empty-client">هنوز کلاینتی برای این اینباند ساخته نشده.</div>'}</div>
+        <div class="client-list">${clients.length?clients.map(c=>`<article class="client-row"><div class="client-avatar"><i class="ti ti-device-laptop"></i></div><div class="client-main"><b>${escapeHtml(c.label||'Client')}</b><small class="mono">${escapeHtml(c.uuid)}</small><div class="client-tags"><span>${c.active?'فعال':'خاموش'}</span><span>${fmtBytes(c.used_bytes||0)}${c.limit_bytes?' / '+fmtBytes(c.limit_bytes):''}</span><span>${c.expires_at?escapeHtml(c.expires_at.slice(0,10)):'∞'}</span></div></div><div class="client-actions"><button class="iconbtn" title="لینک اشتراک" onclick="showClientSubLink(${escapeHtml(JSON.stringify(c.sub||''))})"><i class="ti ti-qrcode"></i></button><button class="iconbtn" title="کپی VLESS" onclick="copyText(${escapeHtml(JSON.stringify(c.vless_full||''))})"><i class="ti ti-copy"></i></button><button class="iconbtn" title="تعویض لینک (UUID جدید)" onclick="regenerateClient('${uid}','${c.uuid}')"><i class="ti ti-replace"></i></button><button class="iconbtn" title="ریست حجم مصرفی" onclick="resetClientUsage('${uid}','${c.uuid}')"><i class="ti ti-refresh"></i></button><button class="iconbtn" title="حذف" onclick="deleteClient('${uid}','${c.uuid}')"><i class="ti ti-trash" style="color:var(--bad)"></i></button></div></article>`).join(''):'<div class="empty-client">هنوز کلاینتی برای این اینباند ساخته نشده.</div>'}</div>
       </div>
   `, `<button class="btn" style="width:100%" onclick="loadLinks();openClients('${uid}')"><i class="ti ti-refresh"></i>بروزرسانی</button>`);
   }catch(e){toast(e.message,false)}
@@ -1409,10 +1741,115 @@ async function createClient(uid){
   try{await api(`/api/links/${uid}/clients`,{method:'POST',body:JSON.stringify({label,limit_bytes:limit?limit*1024*1024*1024:0,expires_days:days})});toast('کلاینت واقعی ساخته شد ✓');openClients(uid);loadLinks();}catch(e){toast(e.message,false)}
 }
 async function deleteClient(uid,cid){
-  if(!confirm('این کلاینت حذف شود؟')) return;
+  if(!confirm(t('این کلاینت حذف شود؟'))) return;
   try{await api(`/api/links/${uid}/clients/${cid}`,{method:'DELETE'});toast('کلاینت حذف شد');openClients(uid);loadLinks();}catch(e){toast(e.message,false)}
 }
-async function copyText(v){try{await navigator.clipboard.writeText(v);toast('کپی شد ✓')}catch(e){prompt('کپی کنید:',v)}}
+async function regenerateClient(uid,cid){
+  if(!confirm(t('یک لینک/UUID جدید برای این کلاینت صادر شود؟ لینک قبلی بلافاصله از کار می‌افتد و باید لینک جدید را دوباره برای کاربر بفرستید.'))) return;
+  try{await api(`/api/links/${cid}/regenerate`,{method:'POST'});toast('لینک کلاینت تعویض شد ✓');openClients(uid);loadLinks();}catch(e){toast(e.message,false)}
+}
+async function resetClientUsage(uid,cid){
+  if(!confirm(t('حجم مصرفی این کلاینت از صفر شروع شود؟'))) return;
+  try{await api(`/api/links/${cid}/reset-usage`,{method:'POST'});toast('حجم مصرف ریست شد ✓');openClients(uid);loadLinks();}catch(e){toast(e.message,false)}
+}
+
+// ============================================================
+// Standalone Client Manager page (بخش جدای ساخت کلاینت)
+// ============================================================
+let CM_INBOUNDS = [];
+let CM_SELECTED_UID = '';
+async function loadClientManager(){
+  try{
+    const res = await api('/api/links');
+    CM_INBOUNDS = res.links || [];
+    const sel = $('cmInboundSelect');
+    const keep = CM_SELECTED_UID;
+    sel.innerHTML = '<option value="">— انتخاب کنید —</option>' + CM_INBOUNDS.map(l=>
+      `<option value="${l.uuid}">${escapeHtml(l.label||'Inbound')} · ${escapeHtml(protoLabel(l))} ${l.live_status==='live'?'(LIVE)':'(LINK-ONLY)'}</option>`
+    ).join('');
+    if(keep && CM_INBOUNDS.some(l=>l.uuid===keep)){
+      sel.value = keep;
+      loadClientManagerClients(keep);
+    } else {
+      $('cmInboundInfo').innerHTML = '';
+      $('cmBody').innerHTML = `<div class="empty"><i class="ti ti-router"></i>ابتدا یک اینباند را از بالا انتخاب کن</div>`;
+    }
+  }catch(e){ toast(e.message, false); }
+}
+async function loadClientManagerClients(uid){
+  CM_SELECTED_UID = uid || '';
+  if(!uid){
+    $('cmInboundInfo').innerHTML = '';
+    $('cmBody').innerHTML = `<div class="empty"><i class="ti ti-router"></i>ابتدا یک اینباند را از بالا انتخاب کن</div>`;
+    return;
+  }
+  const inbound = CM_INBOUNDS.find(x=>x.uuid===uid);
+  try{
+    const d = await api(`/api/links/${uid}/clients`);
+    const clients = d.clients || [];
+    $('cmInboundInfo').innerHTML = inbound ? `
+      <div class="client-hero" style="margin-top:12px"><div><b>${escapeHtml(inbound.label||'Inbound')}</b><small>${escapeHtml(protoLabel(inbound))} · ${escapeHtml(inbound.address||'')}:${inbound.port||443}</small></div><span class="badge ${inbound.live_status==='live'?'green':'red'}">${inbound.live_status==='live'?'LIVE':'LINK-ONLY'}</span></div>
+      ${inbound.live_status!=='live'?`<div class="notice danger-note" style="margin-top:10px">این اینباند فعلاً فقط لینک تولید می‌کند. برای Client واقعی، ابتدا یک ترکیب Live مثل VLESS + WS/TCP/XHTTP انتخاب کنید.</div>`:''}
+    ` : '';
+    $('cmBody').innerHTML = `
+      <div class="card" style="padding:16px;margin-bottom:14px">
+        <div class="client-create">
+          <div class="grp"><label>نام کلاینت</label><input id="cmClientName" placeholder="مثلاً iPhone · User 01"></div>
+          <div class="row2">
+            <div class="grp"><label>حجم (GB، خالی = والد)</label><input id="cmClientLimit" type="number" min="0" placeholder="0"></div>
+            <div class="grp"><label>انقضا (روز، 0 = والد)</label><input id="cmClientDays" type="number" min="0" placeholder="0"></div>
+          </div>
+          <button class="btn primary" style="width:100%" onclick="createClientMgr('${uid}')"><i class="ti ti-user-plus"></i>ساخت کلاینت واقعی</button>
+        </div>
+      </div>
+      <div class="card" style="padding:16px">
+        <div class="panel-head" style="padding:0 0 12px;border:0"><div><b>کلاینت‌های این اینباند</b><small>${clients.length} کلاینت</small></div></div>
+        <div class="client-list">${clients.length ? clients.map(c=>`<article class="client-row"><div class="client-avatar"><i class="ti ti-device-laptop"></i></div><div class="client-main"><b>${escapeHtml(c.label||'Client')}</b><small class="mono">${escapeHtml(c.uuid)}</small><div class="client-tags"><span>${c.active?'فعال':'خاموش'}</span><span>${fmtBytes(c.used_bytes||0)}${c.limit_bytes?' / '+fmtBytes(c.limit_bytes):''}</span><span>${c.expires_at?escapeHtml(c.expires_at.slice(0,10)):'∞'}</span></div></div><div class="client-actions"><button class="iconbtn" title="لینک اشتراک" onclick="showClientSubLink(${escapeHtml(JSON.stringify(c.sub||''))})"><i class="ti ti-qrcode"></i></button><button class="iconbtn" title="کپی VLESS" onclick="copyText(${escapeHtml(JSON.stringify(c.vless_full||''))})"><i class="ti ti-copy"></i></button><button class="iconbtn" title="تعویض لینک (UUID جدید)" onclick="regenerateClientMgr('${uid}','${c.uuid}')"><i class="ti ti-replace"></i></button><button class="iconbtn" title="ریست حجم مصرفی" onclick="resetClientMgrUsage('${uid}','${c.uuid}')"><i class="ti ti-refresh"></i></button><button class="iconbtn" title="حذف" onclick="deleteClientMgr('${uid}','${c.uuid}')"><i class="ti ti-trash" style="color:var(--bad)"></i></button></div></article>`).join('') : '<div class="empty-client">هنوز کلاینتی برای این اینباند ساخته نشده.</div>'}</div>
+      </div>
+    `;
+  }catch(e){ toast(e.message, false); }
+}
+async function createClientMgr(uid){
+  const label = $('cmClientName').value.trim();
+  const limit = Number($('cmClientLimit').value) || 0;
+  const days = Number($('cmClientDays').value) || 0;
+  try{
+    await api(`/api/links/${uid}/clients`, {method:'POST', body: JSON.stringify({label, limit_bytes: limit ? limit*1024*1024*1024 : 0, expires_days: days})});
+    toast('کلاینت واقعی ساخته شد ✓');
+    loadClientManagerClients(uid);
+  }catch(e){ toast(e.message, false); }
+}
+async function deleteClientMgr(uid, cid){
+  if(!confirm(t('این کلاینت حذف شود؟'))) return;
+  try{ await api(`/api/links/${uid}/clients/${cid}`, {method:'DELETE'}); toast('کلاینت حذف شد'); loadClientManagerClients(uid); }
+  catch(e){ toast(e.message, false); }
+}
+async function regenerateClientMgr(uid, cid){
+  if(!confirm(t('یک لینک/UUID جدید برای این کلاینت صادر شود؟ لینک قبلی بلافاصله از کار می‌افتد و باید لینک جدید را دوباره برای کاربر بفرستید.'))) return;
+  try{ await api(`/api/links/${cid}/regenerate`, {method:'POST'}); toast('لینک کلاینت تعویض شد ✓'); loadClientManagerClients(uid); }
+  catch(e){ toast(e.message, false); }
+}
+async function resetClientMgrUsage(uid, cid){
+  if(!confirm(t('حجم مصرفی این کلاینت از صفر شروع شود؟'))) return;
+  try{ await api(`/api/links/${cid}/reset-usage`, {method:'POST'}); toast('حجم مصرف ریست شد ✓'); loadClientManagerClients(uid); }
+  catch(e){ toast(e.message, false); }
+}
+async function copyText(v){
+  v = v || '';
+  if(window.isSecureContext && navigator.clipboard && navigator.clipboard.writeText){
+    try{ await navigator.clipboard.writeText(v); toast('کپی شد ✓'); return; }catch(e){ /* برو سراغ روش قدیمی */ }
+  }
+  if(legacyCopy(v)){ toast('کپی شد ✓'); } else { prompt('کپی کنید:', v); }
+}
+function showClientSubLink(subUrl){
+  if(!subUrl){ toast('لینک ساب برای این کلاینت در دسترس نیست', false); return; }
+  const qr = 'https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=' + encodeURIComponent(subUrl);
+  openDrawer('لینک اشتراک کلاینت', `
+    <div class="qr-box"><img src="${qr}"></div>
+    <div class="grp"><label>لینک ساب</label><div class="copy-row"><input readonly value="${escapeHtml(subUrl)}" id="clientSubLinkInp"></div></div>
+    <p class="hint">اگر این لینک برای مشتری باز نمی‌شود، ابتدا از تب «تنظیمات» آدرس عمومی پنل را درست تنظیم کنید.</p>
+  `, `<button class="btn primary" style="width:100%" onclick="copyInput('clientSubLinkInp')"><i class="ti ti-copy"></i>کپی لینک ساب</button>`);
+}
 
 function showSubLink(uid){
   const l = LINKS.find(x=>x.uuid===uid);
@@ -1425,46 +1862,92 @@ function showSubLink(uid){
     <p class="hint">اگر این لینک برای مشتری باز نمی‌شود، ابتدا از تب «تنظیمات» آدرس عمومی پنل را درست تنظیم کنید.</p>
   `, `<button class="btn primary" style="width:100%" onclick="copyInput('subLinkInp')"><i class="ti ti-copy"></i>کپی لینک ساب</button>`);
 }
-function copyInput(id){
+function legacyCopy(text){
+  // execCommand روی همه‌ی مرورگرها حتی بدون HTTPS (secure context) کار می‌کند.
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.top = '-9999px';
+  ta.style.left = '-9999px';
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  let ok = false;
+  try{ ok = document.execCommand('copy'); }catch(e){ ok = false; }
+  document.body.removeChild(ta);
+  return ok;
+}
+async function copyInput(id){
   const el = $(id);
+  if(!el) return;
+  const value = el.value || '';
+  el.focus();
   el.select();
-  navigator.clipboard?.writeText(el.value).then(()=>toast('کپی شد')).catch(()=>document.execCommand('copy'));
+  // navigator.clipboard فقط در HTTPS (secure context) در دسترسه؛ اگر پنل با HTTP
+  // (بدون دامنه/SSL) باز شده باشه این آبجکت اصلاً وجود نداره و باید مستقیم به
+  // روش قدیمی (execCommand) یا در آخرین حالت به prompt دستی سوییچ کنیم.
+  if(window.isSecureContext && navigator.clipboard && navigator.clipboard.writeText){
+    try{
+      await navigator.clipboard.writeText(value);
+      toast('کپی شد ✓');
+      return;
+    }catch(e){ /* برو سراغ روش قدیمی */ }
+  }
+  if(legacyCopy(value)){
+    toast('کپی شد ✓');
+  } else {
+    prompt('کپی کنید:', value);
+  }
 }
 async function toggleLink(uid, active){
   try{ await api(`/api/links/${uid}`, {method:'PATCH', body: JSON.stringify({active})}); toast('بروزرسانی شد'); loadLinks(); }
   catch(e){ toast(e.message, false); }
 }
 async function deleteLink(uid){
-  if(!confirm('این کانفیگ حذف شود؟')) return;
+  if(!confirm(t('این کانفیگ حذف شود؟'))) return;
   try{ await api(`/api/links/${uid}`, {method:'DELETE'}); toast('حذف شد'); loadLinks(); }
-  catch(e){
-    // اگر اینباند کلاینت وابسته دارد، بک‌اند با پیام هشدار (شامل تعداد) رد می‌کند؛
-    // این‌جا به کاربر گزینه‌ی حذف قطعی (همراه با کلاینت‌ها) داده می‌شود.
-    if(String(e.message||'').includes('کلاینت وابسته')){
-      if(confirm(e.message + '\n\nآیا اینباند به‌همراه تمام کلاینت‌های وابسته‌اش حذف شود؟')){
-        try{ await api(`/api/links/${uid}?force=true`, {method:'DELETE'}); toast('اینباند و کلاینت‌های آن حذف شدند'); loadLinks(); }
-        catch(e2){ toast(e2.message, false); }
-      }
-      return;
-    }
-    toast(e.message, false);
-  }
+  catch(e){ toast(e.message, false); }
+}
+async function resetLinkUsage(uid){
+  if(!confirm(t('حجم مصرفی این کانفیگ از صفر شروع شود؟'))) return;
+  try{ await api(`/api/links/${uid}/reset-usage`, {method:'POST'}); toast('حجم مصرف ریست شد'); loadLinks(); }
+  catch(e){ toast(e.message, false); }
+}
+async function regenerateLink(uid){
+  if(!confirm(t('یک لینک/UUID جدید صادر شود؟ لینک قبلی بلافاصله از کار می‌افتد و باید لینک جدید را دوباره برای کاربر بفرستید.'))) return;
+  try{ const r = await api(`/api/links/${uid}/regenerate`, {method:'POST'}); toast('لینک جدید صادر شد'); loadLinks(); showSubLink(r.uuid); }
+  catch(e){ toast(e.message, false); }
 }
 async function openAutoLink(){
   try{ await api('/api/links/auto', {method:'POST', body: JSON.stringify({profile:'balanced'})}); toast('کانفیگ خودکار ساخته شد'); loadLinks(); }
   catch(e){ toast(e.message, false); }
 }
-function manualBuilderHtml(l){
+// Single source of truth for turning a link's stored fields into
+// {base_protocol, network, security}. Both the builder's initial render and
+// the edit-drawer's hidden-field sync must agree, or the visible transport
+// card and the value that actually gets submitted can diverge (this used to
+// happen for links whose `protocol` was a legacy shortcut like "vless-ws":
+// the card correctly showed WebSocket, but the hidden #mNetwork field fell
+// back to a stale/defaulted "tcp" a moment later).
+function deriveManualParts(l){
   l = l || {};
   const proto = l.protocol || 'manual';
-  let bp = l.base_protocol || 'vless';
-  let net = l.network || 'ws';
-  let sec = l.security || 'tls';
-  if(proto==='vless-ws'){bp='vless';net='ws';sec='tls'}
-  else if(proto==='vless-tcp'){bp='vless';net='tcp';sec='none'}
-  else if(proto.startsWith('xhttp-')){bp='vless';net='xhttp';sec='tls'}
-  else if(proto==='vmess-ws'){bp='vmess';net='ws';sec='tls'}
-  else if(proto==='trojan-ws'){bp='trojan';net='ws';sec='tls'}
+  if(proto === 'manual'){
+    // Created by the advanced builder: base_protocol/network/security were
+    // explicitly written by the backend and are always reliable.
+    return {bp: l.base_protocol || 'vless', net: l.network || 'ws', sec: l.security || 'tls'};
+  }
+  if(proto==='vless-ws') return {bp:'vless',net:'ws',sec:'tls'};
+  if(proto==='vless-tcp') return {bp:'vless',net:'tcp',sec:'none'};
+  if(proto.startsWith('xhttp-')) return {bp:'vless',net:'xhttp',sec:'tls'};
+  if(proto==='vmess-ws') return {bp:'vmess',net:'ws',sec:'tls'};
+  if(proto==='trojan-ws') return {bp:'trojan',net:'ws',sec:'tls'};
+  return {bp: l.base_protocol || 'vless', net: l.network || 'ws', sec: l.security || 'tls'};
+}
+function manualBuilderHtml(l){
+  l = l || {};
+  const parts = deriveManualParts(l);
+  let bp = parts.bp, net = parts.net, sec = parts.sec;
   const methods = MANUAL_META.shadowsocks_methods || ['chacha20-ietf-poly1305','aes-128-gcm','aes-256-gcm'];
   const icons = {vless:'ti-bolt',vmess:'ti-brand-vscode',trojan:'ti-shield-lock',shadowsocks:'ti-brand-shield'};
   const bpLabels = {vless:'VLESS',vmess:'VMess',trojan:'Trojan',shadowsocks:'Shadowsocks'};
@@ -1489,7 +1972,7 @@ function manualBuilderHtml(l){
         <div class="ib-section-body">
           <div class="ib-step"><span class="num">1</span><div><b>پروتکل پایه</b><small>اول مشخص کن با چه پروتکلی کانفیگ ساخته شود</small></div></div>
           <div id="ibProtocolCards" class="ib-matrix">
-            ${Object.entries(bpLabels).map(([id,label])=>`<label class="ib-card ${bp===id?'on':''}" data-proto-card="${id}"><input type="radio" name="ibBaseProtocol" value="${id}" ${bp===id?'checked':''} onchange="selectBaseProtocol('${id}')"><span class="ib-card-icon"><i class="ti ${icons[id]||'ti-network'}"></i></span><span><b>${label}</b><small>${id==='vless'?'UUID / XTLS ecosystem':id==='vmess'?'Legacy-compatible':id==='trojan'?'Password-style auth':'AEAD proxy'}</small></span></label>`).join('')}
+            ${Object.entries(bpLabels).map(([id,label])=>`<label class="ib-opt ${bp===id?'on':''}" data-proto-card="${id}"><input type="radio" name="ibBaseProtocol" value="${id}" ${bp===id?'checked':''} onchange="selectBaseProtocol('${id}')"><span class="ib-opt-icon"><i class="ti ${icons[id]||'ti-network'}"></i></span><span><b>${label}</b><small>${id==='vless'?'UUID / XTLS ecosystem':id==='vmess'?'Legacy-compatible':id==='trojan'?'Password-style auth':'AEAD proxy'}</small></span></label>`).join('')}
           </div>
         </div>
       </div>
@@ -1498,7 +1981,7 @@ function manualBuilderHtml(l){
         <div class="ib-section-body">
           <div class="ib-step"><span class="num">2</span><div><b>Transport / Network</b><small>حالا مسیر انتقال را جداگانه انتخاب کن</small></div></div>
           <div id="ibTransportCards" class="ib-matrix">
-            ${nets.map(([id,label,sub,icon])=>`<label class="ib-card ${net===id?'on':''}" data-net-card="${id}"><input type="radio" name="ibNetwork" value="${id}" ${net===id?'checked':''} onchange="selectTransport('${id}')"><span class="ib-card-icon"><i class="ti ${icon}"></i></span><span><b>${label}</b><small>${sub}</small></span></label>`).join('')}
+            ${nets.map(([id,label,sub,icon])=>`<label class="ib-opt ${net===id?'on':''}" data-net-card="${id}"><input type="radio" name="ibNetwork" value="${id}" ${net===id?'checked':''} onchange="selectTransport('${id}')"><span class="ib-opt-icon"><i class="ti ${icon}"></i></span><span><b>${label}</b><small>${sub}</small></span></label>`).join('')}
           </div>
           <div id="ibTransportNote" class="ib-status" style="margin-top:10px"></div>
         </div>
@@ -1508,7 +1991,7 @@ function manualBuilderHtml(l){
         <div class="ib-section-body">
           <div class="ib-step"><span class="num">3</span><div><b>Security</b><small>TLS / Reality / None را مستقل از ترنسپورت انتخاب کن</small></div></div>
           <div id="ibSecurityCards" class="ib-matrix">
-            ${secs.map(x=>`<label class="ib-card ${sec===x.id?'on':''}" data-sec-card="${x.id}"><input type="radio" name="ibSecurity" value="${x.id}" ${sec===x.id?'checked':''} onchange="selectSecurity('${x.id}')"><span class="ib-card-icon"><i class="ti ${x.id==='reality'?'ti-key':x.id==='tls'?'ti-lock':'ti-lock-open'}"></i></span><span><b>${x.label}</b><small>${x.id==='reality'?'Reality public-key mode':x.id==='tls'?'Standard TLS':'No TLS wrapper'}</small></span></label>`).join('')}
+            ${secs.map(x=>`<label class="ib-opt ${sec===x.id?'on':''}" data-sec-card="${x.id}"><input type="radio" name="ibSecurity" value="${x.id}" ${sec===x.id?'checked':''} onchange="selectSecurity('${x.id}')"><span class="ib-opt-icon"><i class="ti ${x.id==='reality'?'ti-key':x.id==='tls'?'ti-lock':'ti-lock-open'}"></i></span><span><b>${x.label}</b><small>${x.id==='reality'?'Reality public-key mode':x.id==='tls'?'Standard TLS':'No TLS wrapper'}</small></span></label>`).join('')}
           </div>
           <div id="mLiveHint" class="ib-status" style="margin-top:10px"></div>
         </div>
@@ -1597,7 +2080,7 @@ function onManualChange(){
   const hint=$('mLiveHint');
   if(hint){
     const live=base!=='shadowsocks' && (MANUAL_META.live_combos||[]).some(c=>c[0]===net&&c[1]===sec) && !(net==='xhttp'&&($('mXhttpMode')?.value||'auto')==='stream-one');
-    hint.className='ib-status '+(live?'ok':'warn'); hint.innerHTML=live?'<i class="ti ti-circle-check"></i> این ترکیب توسط هسته فعلی پنل پشتیبانی می‌شود.':'<i class="ti ti-alert-triangle"></i> این ترکیب فقط لینک می‌سازد؛ برای سرو واقعی به Xray-core / نود خارجی نیاز است.';
+    hint.className='ib-status '+(live?'ok':'warn'); hint.innerHTML=live?'<i class="ti ti-circle-check"></i> این ترکیب آماده استفاده است.':'<i class="ti ti-alert-triangle"></i> این ترکیب برای ساخت لینک و مدیریت سرویس آماده شده است.';
   }
   const tn=$('ibTransportNote');
   if(tn){tn.innerHTML=base==='shadowsocks'?'<i class="ti ti-info-circle"></i> Shadowsocks به‌صورت TCP-only در این Builder ارائه می‌شود.':'<i class="ti ti-adjustments-horizontal"></i> Transport فقط مسیر انتقال است و جدا از پروتکل پایه انتخاب می‌شود.';}
@@ -1645,9 +2128,10 @@ function openLinkDrawer(uid){
     let bp=document.getElementById('mBase'); if(!bp){bp=document.createElement('input');bp.type='hidden';bp.id='mBase';document.querySelector('.drawer .dr-body')?.appendChild(bp)}
     let net=document.getElementById('mNetwork'); if(!net){net=document.createElement('input');net.type='hidden';net.id='mNetwork';document.querySelector('.drawer .dr-body')?.appendChild(net)}
     let sec=document.getElementById('mSecurity'); if(!sec){sec=document.createElement('input');sec.type='hidden';sec.id='mSecurity';document.querySelector('.drawer .dr-body')?.appendChild(sec)}
-    let proto=l.protocol||'manual'; bp.value=l.base_protocol|| (proto==='vless-tcp'?'vless':proto.startsWith('xhttp-')?'vless':proto==='vmess-ws'?'vmess':proto==='trojan-ws'?'trojan':'vless');
-    net.value=l.network|| (proto==='vless-tcp'?'tcp':proto.startsWith('xhttp-')?'xhttp':proto==='vmess-ws'||proto==='trojan-ws'?'ws':'ws');
-    sec.value=l.security|| (proto==='vless-tcp'?'none':proto==='manual'?'tls':'tls');
+    let proto=l.protocol||'manual'; const parts=deriveManualParts(l);
+    bp.value=parts.bp;
+    net.value=parts.net;
+    sec.value=parts.sec;
     if(bp.value==='shadowsocks'){net.value='tcp';sec.value='none'}
     refreshInboundCards(); onManualChange(); updateBuilderSummary();
   },0);
@@ -1703,7 +2187,7 @@ async function submitCategory(cid){
   }catch(e){ toast(e.message, false); }
 }
 async function deleteCategory(cid){
-  if(!confirm('این دسته حذف شود؟')) return;
+  if(!confirm(t('این دسته حذف شود؟'))) return;
   try{ await api(`/api/categories/${cid}`, {method:'DELETE'}); toast('حذف شد'); loadCategories(); }
   catch(e){ toast(e.message, false); }
 }
@@ -1733,8 +2217,49 @@ async function submitSubGroup(){
   catch(e){ toast(e.message, false); }
 }
 async function deleteSubGroup(id){
-  if(!confirm('این گروه حذف شود؟')) return;
+  if(!confirm(t('این گروه حذف شود؟'))) return;
   try{ await api(`/api/subs/${id}`, {method:'DELETE'}); toast('حذف شد'); loadSubGroups(); }
+  catch(e){ toast(e.message, false); }
+}
+
+// ============================================================
+// PLANS
+// ============================================================
+async function loadPlans(){
+  try{
+    const res = await api('/api/plans');
+    const plans = res.plans||[];
+    $('plansBody').innerHTML = plans.map(p=>`
+      <tr><td>${escapeHtml(p.name)}</td><td>${p.days} روز</td><td>${p.volume_gb} GB</td><td>${p.speed_mbps||0} Mbps</td>
+      <td>⭐ ${p.stars}</td><td>${p.featured?'<span class="badge green">بله</span>':'—'}</td>
+      <td><div class="row-actions">
+        <button class="iconbtn" onclick="openPlanDrawer('${p.id}')"><i class="ti ti-pencil"></i></button>
+        <button class="iconbtn" onclick="deletePlan('${p.id}')"><i class="ti ti-trash" style="color:var(--bad)"></i></button>
+      </div></td></tr>
+    `).join('') || `<tr><td colspan="7" class="empty">پلنی وجود ندارد</td></tr>`;
+  }catch(e){ toast(e.message, false); }
+}
+function openPlanDrawer(pid){
+  openDrawer(pid?'ویرایش پلن':'پلن جدید', `
+    <div class="grp"><label>نام</label><input id="pName"></div>
+    <div class="row2"><div class="grp"><label>مدت (روز)</label><input id="pDays" type="number" value="30"></div>
+    <div class="grp"><label>حجم (GB)</label><input id="pVolume" type="number" value="50"></div></div>
+    <div class="row2"><div class="grp"><label>سرعت (Mbps، 0=نامحدود)</label><input id="pSpeed" type="number" value="0"></div>
+    <div class="grp"><label>قیمت (Stars)</label><input id="pStars" type="number" value="99"></div></div>
+    <label class="chk"><input type="checkbox" id="pFeatured"> پیشنهاد ویژه</label>
+  `, `<button class="btn primary" style="flex:1" onclick="submitPlan('${pid||''}')"><i class="ti ti-device-floppy"></i>ذخیره</button>`);
+}
+async function submitPlan(pid){
+  const body = {name:$('pName').value, days:$('pDays').value, volume_gb:$('pVolume').value, speed_mbps:$('pSpeed').value, stars:$('pStars').value, featured:$('pFeatured').checked};
+  try{
+    if(pid){ await api(`/api/plans/${pid}`, {method:'PATCH', body:JSON.stringify(body)}); }
+    else{ await api('/api/plans', {method:'POST', body:JSON.stringify(body)}); }
+    toast('ذخیره شد'); closeDrawer(); loadPlans();
+  }catch(e){ toast(e.message, false); }
+}
+async function deletePlan(pid){
+  if(!confirm(t('این پلن حذف شود؟'))) return;
+  try{ await api(`/api/plans/${pid}`, {method:'DELETE'}); toast('حذف شد'); loadPlans(); }
   catch(e){ toast(e.message, false); }
 }
 
@@ -1748,9 +2273,9 @@ async function loadReports(){
     const t = res.totals||{};
     $('repStats').innerHTML = `
       ${statCard('ti-link','#4f7cff', t.links, 'کل کانفیگ‌ها')}
-      ${statCard('ti-circle-check','#22c58b', t.active_links, 'فعال')}
-      ${statCard('ti-clock-x','#f5a524', t.expired_links, 'منقضی')}
-      ${statCard('ti-folders','#4f7cff', t.subs, 'گروه‌های ساب')}
+      ${statCard('ti-shopping-cart','#22c58b', t.orders, 'تعداد سفارش')}
+      ${statCard('ti-star','#f5a524', t.stars, 'مجموع ⭐ فروش')}
+      ${statCard('ti-users','#4f7cff', t.customers, 'مشتری‌ها')}
     `;
     $('repTopBody').innerHTML = (res.top_links||[]).map(l=>`
       <tr><td>${escapeHtml(l.label)}</td><td><span class="badge gray">${protoLabel(l)}</span></td><td class="mono">${fmtBytes(l.used_bytes)}</td></tr>
@@ -1761,33 +2286,60 @@ async function loadReports(){
 // ============================================================
 // ADMINS
 // ============================================================
+const ADMIN_PERM_LABELS = {dashboard:'داشبورد',inbounds:'اینباند و کلاینت',clients:'ساخت کلاینت (بخش جدا)',subscriptions:'سابسکریپشن',categories:'دسته‌بندی',plans:'پلن فروش',reports:'گزارش‌ها',messages:'پیام‌ها و خطاها',bot:'ربات',admins:'مدیریت حساب',settings:'تنظیمات'};
 async function loadAdmins(){
   try{
     const res = await api('/api/admins');
     ADMIN_CACHE = res.admins || [];
-    $('adminsBody').innerHTML = (res.admins||[]).map(a=>`
-      <tr><td>${escapeHtml(a.username)}</td><td>${a.role==='owner'?'مالک':'ادمین'}</td>
-      <td>${a.active?'<span class="badge green">فعال</span>':'<span class="badge red">غیرفعال</span>'}</td>
-      <td class="mono">${a.last_login_at?a.last_login_at.slice(0,16).replace('T',' '):'—'}</td>
-      <td><div class="row-actions">
-        ${a.role==='owner'?'':`<button class="iconbtn" title="ویرایش" onclick="editAdmin('${a.id}')"><i class="ti ti-edit"></i></button>`}
-        ${a.role==='owner'?'':`<button class="iconbtn" title="فعال/غیرفعال" onclick="toggleAdmin('${a.id}', ${!a.active})"><i class="ti ti-power"></i></button>`}
-        ${a.role==='owner'?'':`<button class="iconbtn" title="حذف" onclick="deleteAdmin('${a.id}')"><i class="ti ti-trash" style="color:var(--bad)"></i></button>`}
-      </div></td></tr>
-    `).join('');
+    const adminRows = res.admins || [];
+    const activeAdmins = adminRows.filter(a=>a.active).length;
+    if($('adminTotal')) $('adminTotal').textContent = adminRows.length;
+    if($('adminActive')) $('adminActive').textContent = activeAdmins;
+    $('adminsBody').innerHTML = adminRows.map(a=>{
+      const isOwner = a.role==='owner';
+      const initials = (a.username||'?').replace(/[^A-Za-z0-9آ-ی]/g,'').slice(0,2).toUpperCase() || '?';
+      const lastLogin = a.last_login_at ? a.last_login_at.slice(0,16).replace('T',' ') : 'بدون ورود';
+      const chips = isOwner
+        ? '<span class="admin-perm-chip all"><i class="ti ti-shield-star"></i> دسترسی کامل</span>'
+        : ((a.permissions||[]).length
+            ? (a.permissions||[]).map(p=>`<span class="admin-perm-chip">${ADMIN_PERM_LABELS[p]||p}</span>`).join('')
+            : '<span class="admin-perm-chip">بدون دسترسی</span>');
+      const actions = isOwner ? '' : `
+        <button class="iconbtn edit" title="ویرایش دسترسی" aria-label="ویرایش دسترسی" onclick="editAdmin('${a.id}')"><i class="ti ti-edit"></i></button>
+        <button class="iconbtn power" title="${a.active?'غیرفعال‌سازی':'فعال‌سازی'}" onclick="toggleAdmin('${a.id}', ${!a.active})"><i class="ti ti-power"></i></button>
+        <button class="iconbtn danger" title="حذف ادمین" aria-label="حذف ادمین" onclick="deleteAdmin('${a.id}')"><i class="ti ti-trash" style="color:var(--bad)"></i></button>`;
+      return `
+      <div class="admin-card ${isOwner?'is-owner':''} ${a.active?'':'is-inactive'}">
+        <div class="admin-card-top">
+          <div class="admin-id">
+            <div class="admin-avatar">${escapeHtml(initials)}</div>
+            <div class="admin-meta">
+              <div class="admin-name">${escapeHtml(a.username)}</div>
+              <div class="admin-sub"><span class="admin-status-dot"></span>${a.active?'فعال':'غیرفعال'}</div>
+            </div>
+          </div>
+          <span class="admin-role-badge ${isOwner?'owner':'admin'}"><i class="ti ti-${isOwner?'crown':'shield-check'}"></i>${isOwner?'مالک':'ادمین'}</span>
+        </div>
+        <div class="admin-perm-row">${chips}</div>
+        <div class="admin-card-foot">
+          <div class="admin-login-block"><span class="admin-login-label">آخرین فعالیت</span><span class="admin-login mono"><i class="ti ti-clock"></i> ${escapeHtml(lastLogin)}</span></div>
+          <div class="row-actions"><span class="admin-actions-label">کنترل حساب</span>${actions}</div>
+        </div>
+      </div>`;
+    }).join('');
   }catch(e){ toast(e.message, false); }
 }
 function openAdminDrawer(){
   openDrawer('ادمین جدید', `
     <div class="grp"><label>نام کاربری</label><input id="aUser"></div>
     <div class="grp"><label>رمز عبور</label><input type="password" id="aPass"></div>
-    <div class="perm-grid">${Object.entries({dashboard:'داشبورد',inbounds:'ساخت و مدیریت اینباند',subscriptions:'سابسکریپشن',categories:'دسته‌بندی',reports:'گزارش‌ها',messages:'پیام‌ها و خطاها',bot:'ربات',admins:'مدیریت ادمین',settings:'تنظیمات'}).map(([k,v])=>`<label class="perm-item"><input type="checkbox" data-perm="${k}" ${['dashboard','inbounds','subscriptions'].includes(k)?'checked':''}>${v}</label>`).join('')}</div>
+    <div class="perm-grid">${Object.entries({dashboard:'داشبورد',inbounds:'ساخت و مدیریت اینباند',clients:'ساخت کلاینت (بخش جدا)',subscriptions:'سابسکریپشن',categories:'دسته‌بندی',plans:'پلن فروش',reports:'گزارش‌ها',messages:'پیام‌ها و خطاها',bot:'ربات',admins:'مدیریت حساب',settings:'تنظیمات'}).map(([k,v])=>`<label class="perm-item"><input type="checkbox" data-perm="${k}" ${['dashboard','inbounds','subscriptions'].includes(k)?'checked':''}>${v}</label>`).join('')}</div>
   `, `<button class="btn primary" style="flex:1" onclick="submitAdmin()"><i class="ti ti-device-floppy"></i>ساخت</button>`);
 }
 function editAdmin(id){
   const a = ADMIN_CACHE.find(x=>x.id===id); if(!a || a.role==='owner') return;
-  const perms=['dashboard','inbounds','subscriptions','categories','plans','reports','messages','bot','admins','settings'];
-  const labels={dashboard:'داشبورد',inbounds:'اینباند و کلاینت',subscriptions:'سابسکریپشن',categories:'دسته‌بندی',reports:'گزارش‌ها',messages:'پیام‌ها و خطاها',bot:'ربات',admins:'مدیریت ادمین',settings:'تنظیمات'};
+  const perms=['dashboard','inbounds','clients','subscriptions','categories','plans','reports','messages','bot','admins','settings'];
+  const labels={dashboard:'داشبورد',inbounds:'اینباند و کلاینت',clients:'ساخت کلاینت (بخش جدا)',subscriptions:'سابسکریپشن',categories:'دسته‌بندی',plans:'پلن فروش',reports:'گزارش‌ها',messages:'پیام‌ها و خطاها',bot:'ربات',admins:'مدیریت حساب',settings:'تنظیمات'};
   openDrawer('ویرایش ادمین', `
     <div class="grp"><label>نام کاربری</label><input id="eUser" value="${escapeHtml(a.username||'')}"></div>
     <div class="grp"><label>رمز جدید <small>(اختیاری)</small></label><input type="password" id="ePass" placeholder="بدون تغییر خالی بگذار"></div>
@@ -1807,8 +2359,85 @@ async function toggleAdmin(id, active){
   catch(e){ toast(e.message, false); }
 }
 async function deleteAdmin(id){
-  if(!confirm('این ادمین حذف شود؟')) return;
+  if(!confirm(t('این ادمین حذف شود؟'))) return;
   try{ await api(`/api/admins/${id}`, {method:'DELETE'}); toast('حذف شد'); loadAdmins(); }
+  catch(e){ toast(e.message, false); }
+}
+
+// ============================================================
+// Admin registration requests
+// ============================================================
+let ADMIN_REQ_CACHE = [];
+async function loadAdminRequests(){
+  try{
+    const res = await api('/api/admin-requests');
+    ADMIN_REQ_CACHE = res.requests || [];
+    const card = $('adminReqCard');
+    const pending = ADMIN_REQ_CACHE.filter(r=>r.status==='pending');
+    $('adminReqBadge').textContent = pending.length + ' درخواست';
+    if(!ADMIN_REQ_CACHE.length){ card.style.display='none'; return; }
+    card.style.display = '';
+    const rows = [...pending, ...ADMIN_REQ_CACHE.filter(r=>r.status!=='pending')].slice(0, 30);
+    $('adminReqBody').innerHTML = rows.length ? rows.map(r=>{
+      const date = r.created_at ? r.created_at.slice(0,16).replace('T',' ') : '';
+      let statusHtml = '';
+      let actions = '';
+      if(r.status==='pending'){
+        actions = `<button class="btn primary" style="padding:8px 12px;font-size:11px" onclick="approveAdminReq('${r.id}')"><i class="ti ti-check"></i>تایید و ساخت ادمین</button>
+                   <button class="btn" style="padding:8px 12px;font-size:11px" onclick="rejectAdminReq('${r.id}')"><i class="ti ti-x"></i>رد</button>`;
+      } else {
+        statusHtml = `<span class="areq-status ${r.status}">${r.status==='approved'?'تایید شده':'رد شده'}</span>`;
+      }
+      return `<div class="areq-row">
+        <div class="areq-info">
+          <div class="areq-name">${escapeHtml(r.full_name||'-')}</div>
+          <div class="areq-meta"><span><i class="ti ti-brand-telegram"></i>@${escapeHtml(r.telegram_id||'-')}</span><span><i class="ti ti-clock"></i>${escapeHtml(date)}</span></div>
+          ${r.note ? `<div class="areq-note">${escapeHtml(r.note)}</div>` : ''}
+        </div>
+        <div class="areq-actions">${actions}${statusHtml}</div>
+      </div>`;
+    }).join('') : `<div class="areq-empty">درخواستی ثبت نشده است</div>`;
+  }catch(e){ /* silent: پنل قدیمی‌تر ممکنه این endpoint رو نداشته باشه */ }
+}
+function approveAdminReq(id){
+  const r = ADMIN_REQ_CACHE.find(x=>x.id===id); if(!r) return;
+  const suggestedUser = (r.telegram_id||'admin').replace(/[^A-Za-z0-9_]/g,'').toLowerCase() || 'admin';
+  openDrawer('تایید ادمین: ' + r.full_name, `
+    <div class="grp"><label>درخواست‌کننده</label><input value="${escapeHtml(r.full_name)} (@${escapeHtml(r.telegram_id)})" disabled></div>
+    <div class="grp"><label>نام کاربری</label><input id="arUser" value="${escapeHtml(suggestedUser)}"></div>
+    <div class="grp"><label>رمز عبور</label><input id="arPass" value="${Math.random().toString(36).slice(-8)}"></div>
+    <div class="grp"><label>شارژ اولیه (استارز)</label><input id="arCredit" type="number" min="0" value="0"></div>
+    <div class="perm-grid">${Object.entries({dashboard:'داشبورد',inbounds:'ساخت و مدیریت اینباند',clients:'ساخت کلاینت (بخش جدا)',subscriptions:'سابسکریپشن',categories:'دسته‌بندی',plans:'پلن فروش',reports:'گزارش‌ها',messages:'پیام‌ها و خطاها',bot:'ربات',admins:'مدیریت حساب',settings:'تنظیمات'}).map(([k,v])=>`<label class="perm-item"><input type="checkbox" data-arperm="${k}" ${['dashboard','inbounds','subscriptions'].includes(k)?'checked':''}>${v}</label>`).join('')}</div>
+  `, `<button class="btn primary" style="flex:1" onclick="confirmApproveAdminReq('${r.id}')"><i class="ti ti-check"></i>تایید و ساخت حساب</button>`);
+}
+async function confirmApproveAdminReq(id){
+  try{
+    const permissions=[...document.querySelectorAll('[data-arperm]:checked')].map(x=>x.dataset.arperm);
+    const body={
+      username: $('arUser').value.trim(),
+      password: $('arPass').value,
+      permissions,
+      credit_stars: Number($('arCredit').value)||0,
+    };
+    const res = await api(`/api/admin-requests/${id}/approve`, {method:'POST', body: JSON.stringify(body)});
+    closeDrawer();
+    const msg = res.delivery_message || '';
+    openDrawer('اطلاعات ورود ادمین', `
+      <p style="font-size:11.5px;color:var(--sub);line-height:1.9">این متن را برای <b>@${escapeHtml(res.telegram_id||'')}</b> در تلگرام ارسال کن:</p>
+      <textarea id="arDeliveryMsg" readonly style="width:100%;min-height:150px;background:var(--panel2);border:1px solid var(--line);color:var(--text);border-radius:12px;padding:12px;font:inherit;line-height:1.9">${escapeHtml(msg)}</textarea>
+    `, `<button class="btn primary" style="flex:1" onclick="copyDeliveryMsg()"><i class="ti ti-copy"></i>کپی متن</button><button class="btn" style="flex:1" onclick="closeDrawer()">بستن</button>`);
+    loadAdmins(); loadAdminRequests();
+  }catch(e){ toast(e.message, false); }
+}
+function copyDeliveryMsg(){
+  const el = document.getElementById('arDeliveryMsg');
+  if(!el) return;
+  el.select();
+  try{ navigator.clipboard.writeText(el.value); toast('کپی شد ✓'); }catch(e){ document.execCommand('copy'); toast('کپی شد ✓'); }
+}
+async function rejectAdminReq(id){
+  if(!confirm('این درخواست رد شود؟')) return;
+  try{ await api(`/api/admin-requests/${id}/reject`, {method:'POST', body: JSON.stringify({})}); toast('درخواست رد شد'); loadAdminRequests(); }
   catch(e){ toast(e.message, false); }
 }
 
@@ -1841,7 +2470,7 @@ function messageIcon(level, source){
   return 'info-circle';
 }
 async function clearErrors(){
-  if(!confirm('همه خطاهای ثبت‌شده پاک شوند؟')) return;
+  if(!confirm(t('همه خطاهای ثبت‌شده پاک شوند؟'))) return;
   try{await api('/api/errors/clear',{method:'POST'});toast('خطاها پاک شدند ✓');loadMessages();}
   catch(e){toast(e.message,false);}
 }
@@ -1889,7 +2518,32 @@ async function loadSettings(){
     $('setBotToken').value = s.bot_token || '';
     $('setBotAdmins').value = s.bot_admin_ids || '';
     setBotDot(s.bot_running);
-    try{ const bt=await api('/api/bot/texts'); const x=bt.texts||{}; if($('botTxtWelcome'))$('botTxtWelcome').value=x.welcome||''; if($('botTxtAdmin'))$('botTxtAdmin').value=x.admin_menu||''; if($('botTxtCreated'))$('botTxtCreated').value=x.config_created||''; }catch(_){}
+    if($('subTplName')) $('subTplName').checked = s.sub_remark_show_name !== false;
+    if($('subTplVolume')) $('subTplVolume').checked = !!s.sub_remark_show_volume;
+    if($('subTplId')) $('subTplId').checked = !!s.sub_remark_show_id;
+    if($('subTplInbound')) $('subTplInbound').checked = !!s.sub_remark_show_inbound;
+    updateSubTemplatePreview();
+    try{ const bt=await api('/api/bot/texts'); const x=bt.texts||{}; if($('botTxtWelcome'))$('botTxtWelcome').value=x.welcome||''; if($('botTxtAdmin'))$('botTxtAdmin').value=x.admin_menu||''; if($('botTxtCreated'))$('botTxtCreated').value=x.config_created||''; if($('botTxtStore'))$('botTxtStore').value=x.store_intro||''; if($('botTxtPayment'))$('botTxtPayment').value=x.payment_success||''; }catch(_){}
+  }catch(e){ toast(e.message, false); }
+}
+function updateSubTemplatePreview(){
+  const parts=[];
+  if($('subTplName')?.checked) parts.push('MyConfig');
+  if($('subTplVolume')?.checked) parts.push('50 GB');
+  if($('subTplId')?.checked) parts.push('a1b2c3d4');
+  if($('subTplInbound')?.checked) parts.push('Inbound-1');
+  const el=$('subTplPreview'); if(el) el.textContent = parts.join(' | ') || 'MyConfig';
+}
+document.addEventListener('change', e=>{ if(['subTplName','subTplVolume','subTplId','subTplInbound'].includes(e.target?.id)) updateSubTemplatePreview(); });
+async function saveSubTemplate(){
+  try{
+    await api('/api/settings', {method:'POST', body: JSON.stringify({
+      sub_remark_show_name: !!$('subTplName')?.checked,
+      sub_remark_show_volume: !!$('subTplVolume')?.checked,
+      sub_remark_show_id: !!$('subTplId')?.checked,
+      sub_remark_show_inbound: !!$('subTplInbound')?.checked,
+    })});
+    toast('الگوی نام کانفیگ‌های ساب ذخیره شد ✓');
   }catch(e){ toast(e.message, false); }
 }
 async function saveTcpSettings(){
@@ -1951,7 +2605,7 @@ function passwordMeter(){
   if(hint) hint.textContent = val ? `قدرت رمز: ${lv.label} — حداقل ۸ کاراکتر، ترکیب حروف بزرگ/کوچک، عدد و نماد پیشنهاد می‌شود.` : 'حداقل ۸ کاراکتر، ترجیحاً ترکیب حروف، عدد و نماد.';
 }
 async function revokeOtherSessions(){
-  if(!confirm('همه نشست‌های قبلی این حساب لغو شوند؟')) return;
+  if(!confirm(t('همه نشست‌های قبلی این حساب لغو شوند؟'))) return;
   try{const r=await api('/api/security/revoke-other-sessions',{method:'POST'});toast(`${r.revoked||0} نشست قبلی لغو شد ✓`)}catch(e){toast(e.message,false)}
 }
 function fmtDiagBytes(n){return fmtBytes(Number(n||0))}
