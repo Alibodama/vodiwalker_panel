@@ -394,13 +394,23 @@ SHADOWSOCKS_METHODS = ("chacha20-ietf-poly1305", "aes-128-gcm", "aes-256-gcm", "
 # جداگانه). سایر ترکیب‌ها (مثل هر چیزی با Reality) فقط لینک/کانفیگ برای استفاده
 # روی یک نود Xray-core واقعی می‌سازند و به همین دلیل در پنل با یک نشان
 # «فقط ساخت لینک» مشخص می‌شوند — این محدودیت صادقانه در UI نشان داده می‌شود.
-MANUAL_LIVE_COMBOS = {
-    ("ws", "tls"),
-    ("ws", "none"),
-    ("xhttp", "tls"),
-    ("xhttp", "none"),
-    ("tcp", "none"),
-}
+#
+# نکته‌ی مهم: این پنل هیچ TLS‌ای خودش ترمینیت نمی‌کنه؛ TLS همیشه توسط لایه‌ی
+# جلویی (Railway / ری‌ورس‌پروکسی خودتان) انجام می‌شه. پس این‌که کدوم ترکیب
+# واقعاً «Live» حساب می‌شه به scheme واقعیِ دیپلوی (get_scheme()) بستگی داره:
+# - وقتی دیپلوی روی https هست (حالت پیش‌فرض/رایج، مثل Railway): فقط ترکیب‌های
+#   TLS واقعاً وصل می‌شن؛ یک کلاینت با security=none تلاش می‌کنه بدون TLS به
+#   پورتی وصل بشه که فقط TLS قبول می‌کنه → هندشیک شکست می‌خوره. پس (ws,none) و
+#   (xhttp,none) این‌جا صادقانه link-only هستن، نه Live.
+# - فقط وقتی خودِ ادمین صراحتاً یک public_base_url با scheme=http تنظیم کرده
+#   باشه (یعنی هیچ TLS‌ای جلوی این برنامه نیست)، برعکسش درسته: none واقعاً کار
+#   می‌کنه ولی tls نه (چون این برنامه خودش گواهی TLS سرو نمی‌کنه).
+# (tcp,none) مستقل از این‌هاست — روی یک پورت TCP خامِ جداگانه (tcp_relay.py)
+# سرو می‌شه، نه پورت وب اصلی، پس همیشه معتبره.
+def manual_live_combos() -> set[tuple[str, str]]:
+    if get_scheme() == "http":
+        return {("ws", "none"), ("xhttp", "none"), ("tcp", "none")}
+    return {("ws", "tls"), ("xhttp", "tls"), ("tcp", "none")}
 
 
 def normalize_protocol(protocol: str | None) -> str:
@@ -1268,7 +1278,8 @@ def generate_vless_link(
     alpn_value = (alpn or DEFAULT_ALPN_BY_PROTOCOL.get(protocol, "http/1.1")).strip()
     label = quote(str(remark or "VodiWalker"), safe="")
     if protocol == "vless-ws":
-        q = {"encryption":"none","security":"tls","type":"ws","host":host,"path":f"/ws/{uuid}","sni":host,"fp":fp,"alpn":alpn_value}
+        sec = "tls" if get_scheme() != "http" else "none"
+        q = {"encryption":"none","security":sec,"type":"ws","host":host,"path":f"/ws/{uuid}","sni":host,"fp":fp,"alpn":alpn_value}
         return "vless://" + uuid + "@" + host + ":" + str(port_value) + "?" + "&".join(f"{k}={quote(str(v), safe=',/') }" for k,v in q.items()) + "#" + label
     if protocol == "vless-tcp":
         # VLESS خام روی TCP — این روی پورت HTTP اصلی سرو نمی‌شه، بلکه روی یک پورت TCP
@@ -1281,7 +1292,8 @@ def generate_vless_link(
         return "vless://" + uuid + "@" + tcp_host + ":" + str(tcp_port) + "?" + "&".join(f"{k}={quote(str(v), safe=',/') }" for k,v in q.items()) + "#" + label
     if protocol.startswith("xhttp-"):
         mode = protocol.replace("xhttp-", "")
-        q = {"encryption":"none","security":"tls","type":"xhttp","mode":mode,"host":host,"path":f"/xhttp-siz10/{mode}/{uuid}","sni":host,"fp":fp,"alpn":alpn_value}
+        sec = "tls" if get_scheme() != "http" else "none"
+        q = {"encryption":"none","security":sec,"type":"xhttp","mode":mode,"host":host,"path":f"/xhttp-siz10/{mode}/{uuid}","sni":host,"fp":fp,"alpn":alpn_value}
         return "vless://" + uuid + "@" + host + ":" + str(port_value) + "?" + "&".join(f"{k}={quote(str(v), safe=',/') }" for k,v in q.items()) + "#" + label
     if protocol == "vmess-ws":
         raw = {"v":"2","ps":remark,"add":host,"port":port_value,"id":uuid,"aid":0,"scy":"auto","net":"ws","type":"none","host":host,"path":f"/ws/{uuid}","tls":"tls","sni":host,"fp":fp}
@@ -1396,7 +1408,12 @@ def build_manual_uri(
         q["mode"] = (str(link.get("grpc_mode") or "gun")).strip() or "gun"
     elif network == "xhttp":
         q["type"] = "xhttp"
-        q["mode"] = xhttp_mode
+        # این پنل یک سرور XHTTP ساده (packet-up/stream-up) پیاده کرده، نه هسته‌ی
+        # کامل Xray-core که بتونه مد "auto" رو واقعاً negotiate کنه. اگر mode
+        # واقعاً "auto" بمونه، کلاینت‌های واقعی معمولاً نمی‌تونن با این سرور وصل
+        # بشن؛ پس به‌صورت خاموش و امن روی "packet-up" (سازگارترین و پایدارترین
+        # مد با این بک‌اند) قفل می‌کنیم تا کانفیگ همیشه واقعاً کار کنه.
+        q["mode"] = "packet-up" if xhttp_mode == "auto" else xhttp_mode
         q["path"] = path
         q["host"] = host_header
     else:
@@ -1496,7 +1513,7 @@ def get_link_info(
     manual_live = (
         protocol == "manual"
         and normalize_base_protocol(link.get("base_protocol")) == "vless"
-        and (manual_network, manual_security) in MANUAL_LIVE_COMBOS
+        and (manual_network, manual_security) in manual_live_combos()
         and not (manual_network == "xhttp" and manual_mode == "stream-one")
     )
     if protocol == "manual":
@@ -3753,7 +3770,7 @@ async def api_protocols(request: Request, _=Depends(require_auth)):
             "xhttp_modes": list(XHTTP_MODES),
             "shadowsocks_methods": list(SHADOWSOCKS_METHODS),
             "fingerprints": list(FINGERPRINTS),
-            "live_combos": [["vless", n, s] for n, s in MANUAL_LIVE_COMBOS],
+            "live_combos": [["vless", n, s] for n, s in manual_live_combos()],
         },
     }
 
@@ -4096,6 +4113,13 @@ async def update_link(
 
         if "config_count" in body:
             link["config_count"] = safe_int(body.get("config_count", 1), minimum=1, maximum=40)
+
+        if "clean_ips" in body:
+            raw_clean = body.get("clean_ips") or body.get("clean_ip") or ""
+            if isinstance(raw_clean, list):
+                link["clean_ips"] = [str(x).strip() for x in raw_clean if str(x).strip()]
+            else:
+                link["clean_ips"] = [x.strip() for x in str(raw_clean).replace(",", "\n").splitlines() if x.strip()]
 
         if "speed_limit_value" in body:
 
@@ -7181,7 +7205,7 @@ async def api_bot_start(token=Depends(require_owner)):
         await telegram_bot.start_bot()
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"خطا در روشن کردن ربات: {exc}")
-    log_activity("system", "ربات فروش از داخل پنل روشن شد", "ok")
+    log_activity("system", "ربات مدیریت پنل از داخل پنل روشن شد", "ok")
     return {"ok": True, **_bot_settings_snapshot()}
 
 
@@ -7192,7 +7216,7 @@ async def api_bot_stop(token=Depends(require_owner)):
         await telegram_bot.stop_bot()
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"خطا در خاموش کردن ربات: {exc}")
-    log_activity("system", "ربات فروش از داخل پنل خاموش شد", "warn")
+    log_activity("system", "ربات مدیریت پنل از داخل پنل خاموش شد", "warn")
     return {"ok": True, **_bot_settings_snapshot()}
 
 
