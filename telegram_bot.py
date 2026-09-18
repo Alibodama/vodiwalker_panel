@@ -1,4 +1,3 @@
-
 import asyncio
 import os
 import re
@@ -35,6 +34,7 @@ from main import (
     get_bot_text,
     add_client_to_inbound,
     remove_inbound_client,
+    LIVE_PROTOCOLS,
 )
 
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
@@ -81,13 +81,27 @@ WIZARD_STEPS = ["label", "protocol", "fingerprint", "alpn", "port", "volume", "s
 
 PROTOCOL_LABELS = {
     "vless-ws": "VLESS + WebSocket",
+    "vless-tcp": "VLESS + TCP (خام)",
     "xhttp-packet-up": "XHTTP (packet-up)",
     "xhttp-stream-up": "XHTTP (stream-up)",
     "xhttp-stream-one": "XHTTP (stream-one)",
+    "vmess-ws": "VMess + WebSocket",
+    "trojan-ws": "Trojan + WebSocket",
 }
 
 def _protocol_label(p: str) -> str:
-    return PROTOCOL_LABELS.get(p, p)
+    label = PROTOCOL_LABELS.get(p, p)
+    if p not in LIVE_PROTOCOLS:
+        label += " 🔗"
+    return label
+
+import html as _html_mod
+
+def _h(text) -> str:
+    """برچسب/نام‌هایی که خودِ ادمین آزادانه تایپ می‌کنه (مثلاً می‌تونن '<' یا '&' داشته باشن)
+    رو قبل از قرار گرفتن توی پیام‌های parse_mode=HTML امن می‌کنه؛ وگرنه تلگرام کل پیام رو
+    رد می‌کنه (400 Bad Request: can't parse entities) و ادمین هیچ خروجی‌ای نمی‌بینه."""
+    return _html_mod.escape(str(text if text is not None else ""), quote=False)
 
 def _fp_label(fp: str) -> str:
     return fp.capitalize()
@@ -233,7 +247,7 @@ def _clients_list_kb(parent_uid: str, page: int = 0):
 def _format_clients_list(parent_uid: str) -> str:
     parent = LINKS.get(parent_uid)
     children = [l for l in LINKS.values() if l.get("parent_inbound_id") == parent_uid]
-    lines = [f"👥 <b>کاربران اینباند «{parent.get('label','?') if parent else '؟'}»</b>", f"تعداد کاربر: {len(children)}"]
+    lines = [f"👥 <b>کاربران اینباند «{_h(parent.get('label','?')) if parent else '؟'}»</b>", f"تعداد کاربر: {len(children)}"]
     limit = int((parent or {}).get("client_limit") or 0)
     if limit:
         lines.append(f"ظرفیت مجاز: {limit}")
@@ -258,7 +272,7 @@ def _wizard_client_prompt(step: str, data: dict) -> str:
         limit_txt = fmt_bytes(data["limit_bytes"]) if data.get("limit_bytes") else "ارث‌بری از اینباند"
         days_txt = f"{data['expires_days']} روز" if data.get("expires_days") else "ارث‌بری از اینباند"
         return (f"📋 <b>پیش‌نمایش کاربر جدید</b>\n\n"
-                f"برچسب: {data.get('label')}\n"
+                f"برچسب: {_h(data.get('label'))}\n"
                 f"حجم: {limit_txt}\n"
                 f"انقضا: {days_txt}\n\n"
                 f"تایید می‌کنی؟")
@@ -337,7 +351,7 @@ def _wizard_prompt(step: str, data: dict) -> str:
     if step == "label":
         return head + "✏️ اسم/برچسب کانفیگ رو بفرست:"
     if step == "protocol":
-        return head + "🌐 پروتکل رو از دکمه‌های زیر انتخاب کن:"
+        return head + "🌐 پروتکل رو از دکمه‌های زیر انتخاب کن:\n<i>🔗 یعنی این پروتکل فقط لینک/کانفیگ می‌سازه و خودِ این پنل بهش سرویس نمی‌ده (برای استفاده روی یک نود Xray-core جدا).</i>"
     if step == "fingerprint":
         return head + "🖐 Fingerprint (uTLS) رو انتخاب کن:"
     if step == "alpn":
@@ -365,7 +379,7 @@ def _wizard_summary(data: dict) -> str:
     alpn = data.get("alpn") or f"پیش‌فرض ({DEFAULT_ALPN_BY_PROTOCOL.get(proto, 'http/1.1')})"
     return (
         "🧩 خلاصه‌ی کانفیگ جدید — تایید کن:\n\n"
-        f"برچسب: <b>{data.get('label','?')}</b>\n"
+        f"برچسب: <b>{_h(data.get('label','?'))}</b>\n"
         f"پروتکل: {_protocol_label(proto)}\n"
         f"Fingerprint: {_fp_label(data.get('fingerprint', DEFAULT_FINGERPRINT))}\n"
         f"ALPN: {alpn}\n"
@@ -392,7 +406,7 @@ def _format_detail(uid: str, l: dict) -> str:
         pct = min(100, round((used_bytes / limit_bytes) * 100, 1))
         usage_line += f"\n{_progress_bar(pct)}  {pct}%"
     return (
-        f"<b>{l.get('label','?')}</b>\n"
+        f"<b>{_h(l.get('label','?'))}</b>\n"
         f"وضعیت: {status}\n"
         f"{usage_line}\n"
         f"محدودیت سرعت: {speed}\n"
@@ -433,9 +447,9 @@ def _subs_list_kb(page: int):
 def _format_sub_detail(sid: str, s: dict) -> str:
     cnt = len(s.get("link_ids", []))
     pw = "🔒 دارد" if s.get("password_hash") else "بدون رمز"
-    desc = s.get("desc") or "—"
+    desc = _h(s.get("desc")) or "—"
     return (
-        f"🗂 <b>{s.get('name','?')}</b>\n"
+        f"🗂 <b>{_h(s.get('name','?'))}</b>\n"
         f"توضیحات: {desc}\n"
         f"تعداد کانفیگ‌های داخل گروه: {cnt}\n"
         f"رمز عبور: {pw}\n\n"
@@ -497,11 +511,11 @@ def _format_cfg_group(uid: str) -> str:
     if sid and sid in SUBS:
         s = SUBS[sid]
         return (
-            f"🗂 کانفیگ «{link.get('label','?')}» توی گروه «{s.get('name','?')}» هست.\n\n"
+            f"🗂 کانفیگ «{_h(link.get('label','?'))}» توی گروه «{_h(s.get('name','?'))}» هست.\n\n"
             f"🔗 لینک ساب حرفه‌ای این گروه:\n<code>{_group_public_url(s)}</code>"
         )
     return (
-        f"کانفیگ «{link.get('label','?')}» توی هیچ گروهی نیست، یعنی فقط لینک ساب ساده داره.\n\n"
+        f"کانفیگ «{_h(link.get('label','?'))}» توی هیچ گروهی نیست، یعنی فقط لینک ساب ساده داره.\n\n"
         "برای گرفتن لینک ساب حرفه‌ای (صفحه‌ی زیبا)، این کانفیگ رو به یک گروه اضافه کن یا یه گروه جدید بساز:"
     )
 
@@ -767,7 +781,7 @@ async def _handle_callback(cb: dict):
         if not s:
             await _edit(chat_id, message_id, "این گروه دیگه وجود نداره.", _main_menu_kb())
             return
-        await _edit(chat_id, message_id, f"❗️ از حذف گروه «{s.get('name')}» مطمئنی؟ لینک ساب حرفه‌ای‌اش دیگه کار نمی‌کنه (کانفیگ‌ها حذف نمی‌شن، فقط از گروه خارج می‌شن).", _confirm_subdel_kb(sid))
+        await _edit(chat_id, message_id, f"❗️ از حذف گروه «{_h(s.get('name'))}» مطمئنی؟ لینک ساب حرفه‌ای‌اش دیگه کار نمی‌کنه (کانفیگ‌ها حذف نمی‌شن، فقط از گروه خارج می‌شن).", _confirm_subdel_kb(sid))
         return
 
     if data.startswith("subdelok:"):
@@ -948,10 +962,10 @@ async def _handle_callback(cb: dict):
         host = get_host()
         vless = vless_link_for_link(l, uid, host)
         sub_url = f"https://{host}/subscription/{uid}"
-        msg = f"🔗 لینک اتصال «{l.get('label')}»:\n\n<code>{vless}</code>\n\nلینک ساب ساده (فقط متن کانفیگ):\n<code>{sub_url}</code>"
+        msg = f"🔗 لینک اتصال «{_h(l.get('label'))}»:\n\n<code>{vless}</code>\n\nلینک ساب ساده (فقط متن کانفیگ):\n<code>{sub_url}</code>"
         sid = l.get("sub_id")
         if sid and sid in SUBS:
-            msg += f"\n\n✨ لینک ساب حرفه‌ای گروه «{SUBS[sid].get('name','?')}»:\n<code>{_group_public_url(SUBS[sid])}</code>"
+            msg += f"\n\n✨ لینک ساب حرفه‌ای گروه «{_h(SUBS[sid].get('name','?'))}»:\n<code>{_group_public_url(SUBS[sid])}</code>"
         else:
             msg += "\n\nℹ️ این کانفیگ توی هیچ گروهی نیست. برای گرفتن لینک ساب حرفه‌ای، از دکمه‌ی «🗂 گروه ساب» توی صفحه‌ی کانفیگ استفاده کن."
         await _send(chat_id, msg)
@@ -963,7 +977,7 @@ async def _handle_callback(cb: dict):
         if not l:
             await _edit(chat_id, message_id, "این کانفیگ دیگه وجود نداره.", _main_menu_kb())
             return
-        await _edit(chat_id, message_id, f"❗️ از حذف «{l.get('label')}» مطمئنی؟ این عمل برگشت‌ناپذیره.", _confirm_delete_kb(uid))
+        await _edit(chat_id, message_id, f"❗️ از حذف «{_h(l.get('label'))}» مطمئنی؟ این عمل برگشت‌ناپذیره.", _confirm_delete_kb(uid))
         return
 
     if data.startswith("delok:"):
@@ -999,7 +1013,7 @@ async def _handle_callback(cb: dict):
         if not child or child.get("parent_inbound_id") != uid:
             await _edit(chat_id, message_id, "این کاربر دیگه وجود نداره.", _clients_list_kb(uid, 0))
             return
-        await _edit(chat_id, message_id, f"❗️ از حذف کاربر «{child.get('label')}» مطمئنی؟", _confirm_delete_client_kb(uid, cid))
+        await _edit(chat_id, message_id, f"❗️ از حذف کاربر «{_h(child.get('label'))}» مطمئنی؟", _confirm_delete_client_kb(uid, cid))
         return
 
     if data.startswith("delclientok:"):
@@ -1095,7 +1109,6 @@ async def start_bot():
         return
     if not ADMIN_IDS:
         logger.warning("Telegram bot: هیچ آیدی ادمینی تنظیم نشده، هیچ‌کس اجازه‌ی مدیریت نداره (ربات روشنه ولی همه رد می‌شن).")
-    load_sales()
     _client = httpx.AsyncClient(timeout=httpx.Timeout(40.0, connect=10.0))
     _running = True
     _poll_task = asyncio.create_task(_poll_loop())
