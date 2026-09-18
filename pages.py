@@ -1537,8 +1537,7 @@ async function refreshOverview(){
     $('ovBizStats').innerHTML = `
       <div><i class="ti ti-network"></i><span><b>${t.links||0}</b><small>کل اینباندها</small></span></div>
       <div><i class="ti ti-circle-check"></i><span><b>${t.active_links||0}</b><small>فعال</small></span></div>
-      <div><i class="ti ti-users"></i><span><b>${t.customers||0}</b><small>مشتریان فروشگاه</small></span></div>
-      <div><i class="ti ti-star"></i><span><b>${t.stars||0}</b><small>فروش (Stars) · ${t.orders||0} سفارش</small></span></div>`;
+      <div><i class="ti ti-users"></i><span><b>${t.customers||0}</b><small>مشتریان فروشگاه</small></span></div>`;
     const top = (rep.top_links||[]).slice(0,6);
     if(!top.length){
       $('ovTopLinks').innerHTML = '<div class="ov-empty">هنوز داده‌ی مصرفی ثبت نشده</div>';
@@ -2011,11 +2010,11 @@ function manualBuilderHtml(l){
               <div class="grp"><label>Path</label><input id="mPath" placeholder="/ws" value="${escapeHtml(l.path||'')}"></div>
               <div class="grp"><label>Host Header</label><input id="mHost" placeholder="domain.com" value="${escapeHtml(l.host_header||'')}"></div>
             </div>
-            <div id="mXhttpModeWrap" class="grp ib-full"><label>XHTTP Mode</label><select id="mXhttpMode">${(MANUAL_META.xhttp_modes||['auto','packet-up','stream-up','stream-one']).map(x=>`<option value="${x}" ${(l.xhttp_mode||'auto')===x?'selected':''}>${x}</option>`).join('')}</select></div>
+            <div id="mXhttpModeWrap" class="grp ib-full"><label>XHTTP Mode</label><select id="mXhttpMode">${(MANUAL_META.xhttp_modes||['auto','packet-up','stream-up','stream-one']).map(x=>`<option value="${x}" ${(l.xhttp_mode||'packet-up')===x?'selected':''}>${x}</option>`).join('')}</select><small style="opacity:.7">packet-up و stream-up توسط این پنل واقعاً سرو می‌شن؛ auto به‌صورت خودکار روی packet-up قفل می‌شه، stream-one فقط لینک می‌سازه (Live نیست).</small></div>
             <div id="mGrpcWrap" class="ib-grid ib-full"><div class="grp"><label>Service Name</label><input id="mGrpcService" placeholder="service" value="${escapeHtml(l.grpc_service_name||'')}"></div><div class="grp"><label>gRPC Mode</label><select id="mGrpcMode"><option value="gun" ${(l.grpc_mode||'gun')==='gun'?'selected':''}>gun</option><option value="multi" ${l.grpc_mode==='multi'?'selected':''}>multi</option></select></div></div>
             <div id="mTcpWrap" class="ib-grid ib-full"><div class="grp"><label>Header Type</label><select id="mHeaderType"><option value="" ${!l.header_type?'selected':''}>none</option><option value="http" ${l.header_type==='http'?'selected':''}>http</option></select></div><div class="grp"><label>Flow</label><select id="mFlow"><option value="" ${!l.flow?'selected':''}>—</option><option value="xtls-rprx-vision" ${l.flow==='xtls-rprx-vision'?'selected':''}>xtls-rprx-vision</option></select></div></div>
             <div id="mTlsWrap" class="ib-grid ib-full"><div class="grp"><label>SNI</label><input id="mSni" value="${escapeHtml(l.sni||'')}" placeholder="example.com"></div><label class="chk" style="align-self:end;margin-bottom:16px"><input id="mAllowInsecure" type="checkbox" ${l.allow_insecure?'checked':''}> Allow Insecure</label></div>
-            <div id="mRealityWrap" class="ib-grid ib-full"><div class="grp"><label>Reality SNI</label><input id="mRealitySni" value="${escapeHtml(l.sni||'')}" placeholder="www.example.com"></div><div class="grp"><label>Public Key</label><input id="mRealityPbk" value="${escapeHtml(l.reality_public_key||'')}" placeholder="public key"></div><div class="grp"><label>Short ID</label><input id="mRealitySid" value="${escapeHtml(l.reality_short_id||'')}" placeholder="short id"></div><div class="grp"><label>Spider X</label><input id="mRealitySpx" value="${escapeHtml(l.reality_spider_x||'/')}" placeholder="/"></div><div class="ib-full"><button type="button" class="btn" onclick="generateRealityKeys()"><i class="ti ti-key"></i>Generate Reality Keypair</button></div></div>
+            <div id="mRealityWrap" class="ib-grid ib-full"><div class="grp"><label>Reality SNI</label><input id="mRealitySni" value="${escapeHtml(l.sni||'')}" placeholder="www.example.com"></div><div class="grp"><label>Public Key</label><input id="mRealityPbk" value="${escapeHtml(l.reality_public_key||'')}" placeholder="public key"></div><div class="grp"><label>Short ID</label><input id="mRealitySid" value="${escapeHtml(l.reality_short_id||'')}" placeholder="short id"></div><div class="grp"><label>Spider X</label><input id="mRealitySpx" value="${escapeHtml(l.reality_spider_x||'/')}" placeholder="/"></div><div class="grp ib-full"><label>Private Key (فقط برای نود Xray-core خودتان — این پنل ذخیره‌اش نمی‌کند)</label><div class="endpoint-input"><input id="mRealityPrivRaw" readonly placeholder="بعد از «Generate Reality Keypair» اینجا نمایش داده می‌شود" value=""><button type="button" class="btn endpoint-btn" onclick="copyText($('mRealityPrivRaw').value)"><i class="ti ti-copy"></i>Copy</button></div></div><div class="ib-full"><button type="button" class="btn" onclick="generateRealityKeys()"><i class="ti ti-key"></i>Generate Reality Keypair</button></div></div>
             <div id="mShadowWrap" class="ib-grid ib-full"><div class="grp"><label>Encryption Method</label><select id="mSsMethod">${methodOpts}</select></div><div class="grp"><label>Password</label><input id="mSsPassword" type="password" value="${escapeHtml(l.ss_password||'')}" placeholder="Password / secret"></div></div>
             <div class="grp"><label>حجم (GB)</label><input id="fLimitVal" type="number" min="0" value="${l.limit_bytes?Math.round(l.limit_bytes/1073741824):''}"></div>
             <div class="grp"><label>اعتبار (روز)</label><input id="fDays" type="number" min="0" value="${l.expires_at?Math.max(0,Math.ceil((new Date(l.expires_at).getTime()-Date.now())/86400000)):''}"></div>
@@ -2024,6 +2023,7 @@ function manualBuilderHtml(l){
             <div class="grp"><label>Connection Limit</label><input id="fConnLimit" type="number" min="0" value="${conn}"></div>
             <div class="grp"><label>تعداد کاربر</label><input id="fClientLimit" type="number" min="0" max="1000" value="${l.client_limit||0}" placeholder="0 = نامحدود"></div>
             <div class="grp"><label>تعداد خروجی</label><input id="fConfigCount" type="number" min="1" max="40" value="${l.config_count||1}"></div>
+            <div class="grp ib-full"><label>آی‌پی‌های تمیز (Clean IP) — هر خط یک آی‌پی/دامنه</label><textarea id="fCleanIps" rows="3" placeholder="1.2.3.4&#10;5.6.7.8&#10;clean.example.com" style="width:100%;resize:vertical;font-family:monospace">${escapeHtml((l.clean_ips||[]).join('\n'))}</textarea><small style="opacity:.7">اگه اینجا چند آی‌پی/دامنه بذاری، «تعداد خروجی» به همون تعداد کانفیگ می‌سازه که هرکدوم روی یکی از این آی‌پی‌ها می‌ره (همه توی یک سابسکریپشن)؛ اگه خالی باشه، فقط همون تعداد کپیِ یک کانفیگ با نام‌های متفاوت ساخته می‌شه.</small></div>
             <div class="grp"><label>Speed (Mbit/s)</label><input id="fSpeed" type="number" min="0" value="${speedMbit}" placeholder="0 = نامحدود"></div>
             <div class="grp ib-full"><label>یادداشت داخلی</label><input id="fNote" value="${escapeHtml(l.note||'')}" placeholder="توضیحات اختیاری"></div>
           </div>
@@ -2079,7 +2079,7 @@ function onManualChange(){
   if(base==='shadowsocks'){ if($('mNetwork') && $('mNetwork').value!=='tcp') $('mNetwork').value='tcp'; if($('mSecurity')) $('mSecurity').value='none'; }
   const hint=$('mLiveHint');
   if(hint){
-    const live=base!=='shadowsocks' && (MANUAL_META.live_combos||[]).some(c=>c[0]===net&&c[1]===sec) && !(net==='xhttp'&&($('mXhttpMode')?.value||'auto')==='stream-one');
+    const live=base!=='shadowsocks' && (MANUAL_META.live_combos||[]).some(c=>c[0]===net&&c[1]===sec) && !(net==='xhttp'&&($('mXhttpMode')?.value||'packet-up')==='stream-one');
     hint.className='ib-status '+(live?'ok':'warn'); hint.innerHTML=live?'<i class="ti ti-circle-check"></i> این ترکیب آماده استفاده است.':'<i class="ti ti-alert-triangle"></i> این ترکیب برای ساخت لینک و مدیریت سرویس آماده شده است.';
   }
   const tn=$('ibTransportNote');
@@ -2112,7 +2112,13 @@ async function loadRailwayEndpoint(){
 }
 
 async function generateRealityKeys(){
-  try{ const r=await api('/api/reality-keypair'); $('mRealityPbk').value=r.public_key; $('mRealitySid').value=r.short_id; toast('کلید Reality ساخته شد. Private Key را روی نود خودتان نگه دارید.'); }
+  try{
+    const r=await api('/api/reality-keypair');
+    $('mRealityPbk').value=r.public_key;
+    $('mRealitySid').value=r.short_id;
+    if($('mRealityPrivRaw')) $('mRealityPrivRaw').value=r.private_key||'';
+    toast('کلید Reality ساخته شد — Private Key را همین‌جا کپی کنید و روی نود Xray-core خودتان قرار دهید (این پنل آن را ذخیره نمی‌کند).');
+  }
   catch(e){ toast(e.message, false); }
 }
 
@@ -2143,8 +2149,8 @@ async function submitLink(uid){
   if(!Number.isInteger(port)||port<1||port>65535){toast('پورت باید بین 1 تا 65535 باشد',false);return}
   if(base==='shadowsocks' && net!=='tcp'){toast('Shadowsocks فقط با TCP ساخته می‌شود',false);return}
   const num=id=>Math.max(0,Number($(id)?.value||0));
-  const body={label:($('fLabel')?.value||'').trim(),protocol:'manual',category_id:$('fCategory')?.value||'0',limit_value:num('fLimitVal'),limit_unit:'GB',expires_days:num('fDays'),expires_at:$('fExpiresAt')?.value||'',ip_limit:num('fIpLimit'),connection_limit:num('fConnLimit'),client_limit:num('fClientLimit'),config_count:Math.max(1,Math.min(40,num('fConfigCount')||1)),speed_limit_value:num('fSpeed'),speed_limit_unit:'MBIT',note:($('fNote')?.value||'').trim(),port,fingerprint:$('mFingerprint')?.value||'chrome',alpn:$('mAlpn')?.value||''};
-  body.manual={base_protocol:base,network:net,security:base==='shadowsocks'?'none':sec,address:$('mAddress')?.value||'',path:$('mPath')?.value||'',host_header:$('mHost')?.value||'',sni:sec==='reality'?($('mRealitySni')?.value||''):($('mSni')?.value||''),alpn:$('mAlpn')?.value||'',flow:$('mFlow')?.value||'',grpc_service_name:$('mGrpcService')?.value||'',grpc_mode:$('mGrpcMode')?.value||'gun',xhttp_mode:$('mXhttpMode')?.value||'auto',header_type:$('mHeaderType')?.value||'',allow_insecure:!!$('mAllowInsecure')?.checked,reality_public_key:$('mRealityPbk')?.value||'',reality_short_id:$('mRealitySid')?.value||'',reality_spider_x:$('mRealitySpx')?.value||'/',ss_method:$('mSsMethod')?.value||'chacha20-ietf-poly1305',ss_password:$('mSsPassword')?.value||''};
+  const body={label:($('fLabel')?.value||'').trim(),protocol:'manual',category_id:$('fCategory')?.value||'0',limit_value:num('fLimitVal'),limit_unit:'GB',expires_days:num('fDays'),expires_at:$('fExpiresAt')?.value||'',ip_limit:num('fIpLimit'),connection_limit:num('fConnLimit'),client_limit:num('fClientLimit'),config_count:Math.max(1,Math.min(40,num('fConfigCount')||1)),clean_ips:($('fCleanIps')?.value||'').trim(),speed_limit_value:num('fSpeed'),speed_limit_unit:'MBIT',note:($('fNote')?.value||'').trim(),port,fingerprint:$('mFingerprint')?.value||'chrome',alpn:$('mAlpn')?.value||''};
+  body.manual={base_protocol:base,network:net,security:base==='shadowsocks'?'none':sec,address:$('mAddress')?.value||'',path:$('mPath')?.value||'',host_header:$('mHost')?.value||'',sni:sec==='reality'?($('mRealitySni')?.value||''):($('mSni')?.value||''),alpn:$('mAlpn')?.value||'',flow:$('mFlow')?.value||'',grpc_service_name:$('mGrpcService')?.value||'',grpc_mode:$('mGrpcMode')?.value||'gun',xhttp_mode:$('mXhttpMode')?.value||'packet-up',header_type:$('mHeaderType')?.value||'',allow_insecure:!!$('mAllowInsecure')?.checked,reality_public_key:$('mRealityPbk')?.value||'',reality_short_id:$('mRealitySid')?.value||'',reality_spider_x:$('mRealitySpx')?.value||'/',ss_method:$('mSsMethod')?.value||'chacha20-ietf-poly1305',ss_password:$('mSsPassword')?.value||''};
   try{if(uid) await api(`/api/links/${uid}`,{method:'PATCH',body:JSON.stringify(body)});else await api('/api/links',{method:'POST',body:JSON.stringify(body)});toast(uid?'اینباند بروزرسانی شد':'اینباند با موفقیت ساخته شد');closeDrawer();loadLinks();}
   catch(e){toast(e.message||'خطا در ذخیره اینباند',false)}
 }
